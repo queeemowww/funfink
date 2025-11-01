@@ -1,0 +1,659 @@
+# okx_async_futures_mainnet.py
+from __future__ import annotations
+
+import os
+import time
+import json
+import hmac
+import base64
+import hashlib
+import asyncio
+import random
+import string
+from decimal import Decimal, ROUND_DOWN
+from typing import Optional, Literal, Dict, Any, List, Tuple
+
+import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OKX_API_KEY        = os.getenv("OKX_API_KEY", "")
+OKX_API_SECRET     = os.getenv("OKX_API_SECRET", "")       # RAW secret строкой
+OKX_API_PASSPHRASE = os.getenv("OKX_API_PASSPHRASE", "")
+OKX_SIMULATED      = os.getenv("OKX_SIMULATED", "0")       # "1" -> paper trading header
+
+
+# ------------------ helpers ------------------
+ALNUM = string.ascii_letters + string.digits
+
+def _d(x) -> Decimal:
+    return Decimal(str(x))
+
+def _round_step(value: Decimal, step: Decimal) -> Decimal:
+    if step == 0:
+        return value
+    q = (value / step).to_integral_value(rounding=ROUND_DOWN)
+    return q * step
+
+def _fmt_decimal(x: Decimal) -> str:
+    s = format(x, "f").rstrip("0").rstrip(".")
+    return s if s else "0"
+
+def _safe_clordid(prefix: str = "o") -> str:
+    """
+    OKX clOrdId: только [A-Za-z0-9], длина <= 32, лучше начинать с буквы.
+    """
+    prefix = "".join(ch for ch in prefix if ch.isalnum())
+    if not prefix or not prefix[0].isalpha():
+        prefix = "o"
+    rnd_len = max(1, 32 - len(prefix))
+    rnd = "".join(random.choice(ALNUM) for _ in range(rnd_len))
+    return (prefix + rnd)[:32]
+
+def to_okx_inst_id(coin_usdt: str) -> str:
+    """
+    'BIOUSDT' -> 'BIO-USDT-SWAP'; если уже 'BIO-USDT-SWAP' — вернёт как есть.
+    """
+    s = coin_usdt.strip().upper()
+    if "-" in s:
+        return s
+    if not s.endswith("USDT"):
+        raise ValueError("Ожидался символ вида XXXUSDT или готовый instId XXX-USDT-SWAP")
+    base = s[:-4]
+    return f"{base}-USDT-SWAP"
+
+
+class OKXAsyncClient:
+    """
+    OKX v5 клиент для USDT-маржинальных SWAP (без ccxt).
+    """
+    def __init__(self, api_key: str, api_secret: str, passphrase: str, *, timeout: float = 15.0):
+        self.api_key = api_key
+        self.api_secret = api_secret.encode("utf-8")  # байты для HMAC
+        self.passphrase = passphrase
+        self.base_url = "https://www.okx.com"
+
+        headers = {"Content-Type": "application/json"}
+        if OKX_SIMULATED == "1":
+            headers["x-simulated-trading"] = "1"
+
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers=headers)
+
+    async def close(self):
+        await self._client.aclose()
+
+    # ------------------ подпись и приватные запросы ------------------
+    @staticmethod
+    def _ts_iso() -> str:
+        t = time.time()
+        return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(t)) + f".{int((t%1)*1000):03d}Z"
+
+    def _sign(self, ts: str, method: str, path_with_query: str, body: str = "") -> str:
+        prehash = f"{ts}{method}{path_with_query}{body}".encode("utf-8")
+        mac = hmac.new(self.api_secret, prehash, hashlib.sha256).digest()
+        return base64.b64encode(mac).decode()
+
+    async def _request_private(
+        self,
+        method: Literal["GET", "POST"],
+        path: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        body: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        ts = self._ts_iso()
+        if method == "GET":
+            body_or_query = ""
+            if params:
+                from urllib.parse import urlencode
+                qs = "?" + urlencode(params, doseq=True)
+                body_or_query = qs
+            sign = self._sign(ts, method, path + body_or_query, "")
+            headers = {
+                "OK-ACCESS-KEY": self.api_key,
+                "OK-ACCESS-SIGN": sign,
+                "OK-ACCESS-TIMESTAMP": ts,
+                "OK-ACCESS-PASSPHRASE": self.passphrase,
+            }
+            if OKX_SIMULATED == "1":
+                headers["x-simulated-trading"] = "1"
+            r = await self._client.get(path, headers=headers, params=params or {})
+        else:
+            payload = json.dumps(body or {}, separators=(",", ":"), ensure_ascii=False)
+            sign = self._sign(ts, method, path, payload)
+            headers = {
+                "OK-ACCESS-KEY": self.api_key,
+                "OK-ACCESS-SIGN": sign,
+                "OK-ACCESS-TIMESTAMP": ts,
+                "OK-ACCESS-PASSPHRASE": self.passphrase,
+                "Content-Type": "application/json",
+            }
+            if OKX_SIMULATED == "1":
+                headers["x-simulated-trading"] = "1"
+            r = await self._client.post(path, headers=headers, content=payload)
+
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "0":
+            # поднимем точный ответ OKX (для отладки)
+            raise RuntimeError(f"OKX error: {data.get('code')} {data.get('msg')} | {data}")
+        return data
+
+    async def _post_private(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._request_private("POST", path, body=body)
+
+    async def _post_order_with_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return await self._post_private("/api/v5/trade/order", body)
+        except RuntimeError as e:
+            msg = str(e)
+            # иногда OKX ругается на кастомный clOrdId — повторим без него
+            if "clOrdId" in msg and ("Parameter" in msg or "51000" in msg):
+                b2 = dict(body); b2.pop("clOrdId", None)
+                return await self._post_private("/api/v5/trade/order", b2)
+            raise
+
+    # ------------------ публичные эндпоинты ------------------
+    async def _get_ticker(self, inst_id: str) -> Dict[str, Any]:
+        r = await self._client.get("/api/v5/market/ticker", params={"instId": inst_id})
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "0" or not data.get("data"):
+            raise RuntimeError(f"Ticker error: {data}")
+        return data["data"][0]
+
+    async def _get_instrument(self, inst_id: str) -> Dict[str, Any]:
+        r = await self._client.get("/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id})
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "0" or not data.get("data"):
+            raise RuntimeError(f"Instrument error: {data}")
+        return data["data"][0]
+
+    # ------------------ аккаунт: posMode (net vs hedge) ------------------
+    async def _get_account_config(self) -> Dict[str, Any]:
+        data = await self._request_private("GET", "/api/v5/account/config")
+        lst = data.get("data") or []
+        if not lst:
+            raise RuntimeError(f"Account config error: {data}")
+        return lst[0]
+
+    async def _get_pos_mode(self) -> str:
+        """
+        'net_mode' (one-way) или 'long_short_mode' (hedge).
+        """
+        cfg = await self._get_account_config()
+        return cfg.get("posMode", "net_mode")
+
+    # ------------------ ЛЕВЕРИДЖ ------------------
+    async def set_leverage(
+        self,
+        inst_id: str,
+        lever: int | str,
+        *,
+        td_mode: Literal["cross", "isolated"],
+        pos_side: Optional[Literal["long", "short"]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Устанавливает плечо для инструмента. На OKX плечо задаётся отдельно от ордера.
+        В hedge-режиме (long_short_mode) желательно указывать posSide.
+        """
+        body: Dict[str, Any] = {
+            "instId": inst_id,
+            "lever": str(lever),
+            "mgnMode": td_mode,
+        }
+        # posSide разрешён только в hedge-режиме
+        if pos_side and (await self._get_pos_mode()) == "long_short_mode":
+            body["posSide"] = pos_side
+        return await self._post_private("/api/v5/account/set-leverage", body)
+
+    # ------------------ конвертация USDT -> sz (контракты) ------------------
+    async def usdt_to_sz(
+        self,
+        inst_id: str,
+        usdt_amount: float | str,
+        *,
+        side: Literal["buy", "sell"],  # buy -> askPx, sell -> bidPx
+    ) -> str:
+        t = await self._get_ticker(inst_id)
+        px_str = t.get("askPx") if side == "buy" else t.get("bidPx")
+        if not px_str or _d(px_str) == 0:
+            px_str = t.get("last") or t.get("sodUtc0")
+        price = _d(px_str)
+        if price <= 0:
+            raise RuntimeError(f"Bad price for {inst_id}: {price}")
+
+        ins = await self._get_instrument(inst_id)
+        ct_val = _d(ins.get("ctVal", "1"))
+        lot_sz = _d(ins.get("lotSz", "1"))
+        min_sz = _d(ins.get("minSz", "1"))
+
+        usdt = _d(usdt_amount)
+        coin_qty = usdt / price
+        raw_sz = coin_qty / (ct_val if ct_val > 0 else _d(1))
+
+        sz = raw_sz
+        if lot_sz > 0:
+            sz = _round_step(sz, lot_sz)
+        if sz < min_sz:
+            sz = min_sz
+
+        return _fmt_decimal(sz)
+
+    # ------------------ позиции: поиск фактической ------------------
+    async def _find_position(
+        self, inst_id: str
+    ) -> Tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """
+        Возвращает (pos_mode, long_pos, short_pos) для inst_id.
+        В net_mode одна из них будет None, а актуальная — в long_pos (qty>0) или short_pos (qty<0).
+        """
+        raw = await self._request_private("GET", "/api/v5/account/positions", params={"instType": "SWAP", "instId": inst_id})
+        items = raw.get("data") or []
+        pos_mode = await self._get_pos_mode()
+
+        long_pos = None
+        short_pos = None
+
+        for p in items:
+            if p.get("instId") != inst_id:
+                continue
+            qty = _d(p.get("pos", "0"))
+            if qty == 0:
+                continue
+
+            if pos_mode == "long_short_mode":
+                side = (p.get("posSide") or "").lower()
+                if side == "long" and qty > 0:
+                    long_pos = p
+                elif side == "short" and qty < 0:
+                    short_pos = p
+            else:
+                # net mode: знак qty определяет сторону
+                if qty > 0:
+                    long_pos = p
+                elif qty < 0:
+                    short_pos = p
+
+        return pos_mode, long_pos, short_pos
+
+    # ------------------ билдер тела ордера ------------------
+    async def _build_order_body(
+        self,
+        *,
+        inst_id: str,
+        side: Literal["buy", "sell"],
+        ord_type: Literal["market", "limit"],
+        sz: str,
+        td_mode: Literal["cross", "isolated"],
+        px: Optional[str],
+        reduce_only: bool,
+        pos_side: Optional[Literal["long", "short"]],
+        cl_ord_id: Optional[str],
+        tag: Optional[str],
+    ) -> Dict[str, Any]:
+        pos_mode = await self._get_pos_mode()
+
+        body: Dict[str, Any] = {
+            "instId": inst_id,
+            "tdMode": td_mode,
+            "side": side,
+            "ordType": ord_type,
+            "sz": sz,
+            "reduceOnly": str(reduce_only).lower(),
+        }
+        if cl_ord_id:
+            body["clOrdId"] = cl_ord_id
+        if tag:
+            body["tag"] = tag
+        if ord_type == "limit":
+            if not px:
+                raise ValueError("px is required for limit orders")
+            body["px"] = px
+
+        # posSide — только в hedge-режиме
+        if pos_mode == "long_short_mode" and pos_side:
+            body["posSide"] = pos_side
+
+        return body
+
+    # ------------------ низкоуровневые ордера (sz уже посчитан) ------------------
+    async def open_long(
+        self,
+        inst_id: str,
+        sz: str,
+        *,
+        ord_type: Literal["market", "limit"] = "market",
+        px: Optional[str] = None,
+        td_mode: Literal["cross", "isolated"] = "cross",
+        pos_side: Optional[Literal["long", "short"]] = None,   # игнорируется в net_mode
+        reduce_only: bool = False,
+        cl_ord_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+    ) -> Dict[str, Any]:
+        if leverage is not None:
+            mode = await self._get_pos_mode()
+            eff_pos_side = pos_side if (mode == "long_short_mode") else None
+            if eff_pos_side is None and mode == "long_short_mode":
+                eff_pos_side = "long"
+            await self.set_leverage(inst_id, leverage, td_mode=td_mode, pos_side=eff_pos_side)
+
+        if cl_ord_id is None:
+            cl_ord_id = _safe_clordid("oL")
+        body = await self._build_order_body(
+            inst_id=inst_id, side="buy", ord_type=ord_type, sz=sz, td_mode=td_mode,
+            px=px, reduce_only=reduce_only, pos_side=pos_side, cl_ord_id=cl_ord_id, tag=tag,
+        )
+        return await self._post_order_with_retry(body)
+
+    async def open_short(
+        self,
+        inst_id: str,
+        sz: str,
+        *,
+        ord_type: Literal["market", "limit"] = "market",
+        px: Optional[str] = None,
+        td_mode: Literal["cross", "isolated"] = "cross",
+        pos_side: Optional[Literal["long", "short"]] = None,   # игнорируется в net_mode
+        reduce_only: bool = False,
+        cl_ord_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+    ) -> Dict[str, Any]:
+        if leverage is not None:
+            mode = await self._get_pos_mode()
+            eff_pos_side = pos_side if (mode == "long_short_mode") else None
+            if eff_pos_side is None and mode == "long_short_mode":
+                eff_pos_side = "short"
+            await self.set_leverage(inst_id, leverage, td_mode=td_mode, pos_side=eff_pos_side)
+
+        if cl_ord_id is None:
+            cl_ord_id = _safe_clordid("oS")
+        body = await self._build_order_body(
+            inst_id=inst_id, side="sell", ord_type=ord_type, sz=sz, td_mode=td_mode,
+            px=px, reduce_only=reduce_only, pos_side=pos_side, cl_ord_id=cl_ord_id, tag=tag,
+        )
+        return await self._post_order_with_retry(body)
+
+    # ------------------ ВНЕШНЯЯ ПУБЛИЧНАЯ ФУНКЦИЯ ПОЛНОГО ЗАКРЫТИЯ ------------------
+    async def close_all_positions(
+        self,
+        symbol: str,                       # 'BIOUSDT' или 'BIO-USDT-SWAP'
+        *,
+        cl_ord_id_prefix: str = "cALL",    # префикс для clOrdId
+        tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Закрывает ПОЛНОСТЬЮ ЛЮБУЮ открытую позицию по symbol.
+        - В net_mode: одна позиция -> закрывается целиком.
+        - В hedge(long_short_mode): если открыты обе стороны (long и short) — закроет обе.
+        Алгоритм:
+          1) пытаемся /api/v5/trade/close-position (официальный полный close),
+          2) при ошибке делаем рыночный reduceOnly ордер на полный объём.
+        Вернёт список результатов (по каждой закрытой стороне).
+        Если позиции нет — поднимет RuntimeError с понятным текстом (чтобы избежать 51169).
+        """
+        inst_id = to_okx_inst_id(symbol)
+        pos_mode, long_pos, short_pos = await self._find_position(inst_id)
+
+        if not long_pos and not short_pos:
+            return {'long_closed': None, "short_closed": None}
+
+        results: List[Dict[str, Any]] = []
+
+        # внутренняя функция закрытия одной стороны
+        async def _close_one(position: Dict[str, Any], close_short: bool) -> Dict[str, Any]:
+            mgn_mode = (position.get("mgnMode") or "").lower()
+            if mgn_mode not in ("cross", "isolated"):
+                mgn_mode = "cross"
+            # posSide для hedge
+            pos_side = None
+            if pos_mode == "long_short_mode":
+                pos_side = "short" if close_short else "long"
+
+            # 1) официальный полный close
+            body = {"instId": inst_id, "mgnMode": mgn_mode}
+            if pos_side:
+                body["posSide"] = pos_side
+            try:
+                r = await self._post_private("/api/v5/trade/close-position", body)
+                results.append(r)
+                return r
+            except Exception:
+                # 2) фолбэк — reduceOnly рыночный ордер на весь объём
+                contracts_abs = _d(position.get("pos", "0")).copy_abs()
+                if contracts_abs <= 0:
+                    raise RuntimeError(f"Nothing to close for {inst_id}")
+
+                sz_str = _fmt_decimal(contracts_abs)
+                if close_short:
+                    # закрываем шорт: buy reduceOnly
+                    r = await self.open_long(
+                        inst_id=inst_id,
+                        sz=sz_str,
+                        ord_type="market",
+                        px=None,
+                        td_mode=mgn_mode,
+                        pos_side=pos_side,
+                        reduce_only=True,
+                        cl_ord_id=_safe_clordid(cl_ord_id_prefix + "S"),
+                        tag=tag,
+                    )
+                else:
+                    # закрываем лонг: sell reduceOnly
+                    r = await self.open_short(
+                        inst_id=inst_id,
+                        sz=sz_str,
+                        ord_type="market",
+                        px=None,
+                        td_mode=mgn_mode,
+                        pos_side=pos_side,
+                        reduce_only=True,
+                        cl_ord_id=_safe_clordid(cl_ord_id_prefix + "L"),
+                        tag=tag,
+                    )
+                results.append(r)
+                return r
+
+        # в net_mode одновременно будет только одна сторона
+        if long_pos:
+            await _close_one(long_pos, close_short=False)
+        if short_pos:
+            await _close_one(short_pos, close_short=True)
+
+        return results
+
+    # ------------------ открытие по USDT ------------------
+    async def open_long_usdt(
+        self,
+        symbol: str,                    # 'BIOUSDT' или 'BIO-USDT-SWAP'
+        usdt_amount: float | str,
+        *,
+        ord_type: Literal["market", "limit"] = "market",
+        px: Optional[str] = None,
+        td_mode: Literal["cross", "isolated"] = "cross",
+        cl_ord_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Открыть ЛОНГ на ~usdt_amount USDT эквивалента.
+        Автоконвертация USDT -> контрактный размер (sz) с учётом lotSz/minSz.
+        """
+        inst_id = to_okx_inst_id(symbol)
+        sz = await self.usdt_to_sz(inst_id, usdt_amount, side="buy")
+        return await self.open_long(
+            inst_id=inst_id,
+            sz=sz,
+            ord_type=ord_type,
+            px=px,
+            td_mode=td_mode,
+            pos_side=None,          # в net_mode игнорируется; в hedge плечо проставится с posSide='long'
+            reduce_only=False,
+            cl_ord_id=cl_ord_id,
+            tag=tag,
+            leverage=leverage,
+        )
+
+    async def open_short_usdt(
+        self,
+        symbol: str,                    # 'BIOUSDT' или 'BIO-USDT-SWAP'
+        usdt_amount: float | str,
+        *,
+        ord_type: Literal["market", "limit"] = "market",
+        px: Optional[str] = None,
+        td_mode: Literal["cross", "isolated"] = "cross",
+        cl_ord_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Открыть ШОРТ на ~usdt_amount USDT эквивалента.
+        Автоконвертация USDT -> контрактный размер (sz) с учётом lotSz/minSz.
+        """
+        inst_id = to_okx_inst_id(symbol)
+        sz = await self.usdt_to_sz(inst_id, usdt_amount, side="sell")
+        return await self.open_short(
+            inst_id=inst_id,
+            sz=sz,
+            ord_type=ord_type,
+            px=px,
+            td_mode=td_mode,
+            pos_side=None,          # в net_mode игнорируется; в hedge плечо проставится с posSide='short'
+            reduce_only=False,
+            cl_ord_id=cl_ord_id,
+            tag=tag,
+            leverage=leverage,
+        )
+
+    # ------------------ helpers (time) ------------------
+    @staticmethod
+    def _iso_from_millis(ms_str: str) -> str:
+        try:
+            ms = int(ms_str)
+        except Exception:
+            return ""
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ms / 1000))
+
+    # ------------------ открытые позиции (сводка) ------------------
+    async def get_open_positions(
+        self,
+        symbol: Optional[str] = None,   # 'BIOUSDT' или 'BIO-USDT-SWAP' или None (все)
+    ) -> Optional[List[dict]]:
+        params: Dict[str, Any] = {"instType": "SWAP"}
+        if symbol:
+            params["instId"] = to_okx_inst_id(symbol)
+
+        raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
+        items = raw.get("data") or []
+        result: List[dict] = []
+
+        if not items:
+            return None
+
+        ticker_cache: dict[str, Dict[str, Any]] = {}
+        ins_cache: dict[str, Dict[str, Any]] = {}
+
+        for p in items:
+            try:
+                inst_id: str = p.get("instId", "")
+                if not inst_id or not inst_id.endswith("-USDT-SWAP"):
+                    continue
+
+                pos_str = p.get("pos", "0")
+                if not pos_str or _d(pos_str) == 0:
+                    continue  # пустая позиция
+
+                pos_side = (p.get("posSide") or "").lower()  # "long"/"short"/"net"
+                leverage = p.get("lever") or p.get("leverage") or ""
+                c_time = p.get("cTime") or p.get("cTimeMs") or ""
+                opened_at = self._iso_from_millis(c_time) if c_time else ""
+
+                # сторона (для net_mode — по знаку)
+                if pos_side in ("long", "short"):
+                    side = pos_side
+                else:
+                    side = "long" if _d(pos_str) > 0 else "short"
+
+                coin = inst_id.split("-")[0] if "-" in inst_id else ""
+
+                # PnL
+                pnl = p.get("upl")
+                if pnl is None or pnl == "":
+                    if inst_id not in ticker_cache:
+                        ticker_cache[inst_id] = await self._get_ticker(inst_id)
+                    t = ticker_cache[inst_id]
+                    last_px = _d(t.get("last") or t.get("askPx") or t.get("bidPx") or "0")
+
+                    avg_px = _d(p.get("avgPx") or "0")
+                    if inst_id not in ins_cache:
+                        ins_cache[inst_id] = await self._get_instrument(inst_id)
+                    ins = ins_cache[inst_id]
+                    ct_val = _d(ins.get("ctVal", "1"))
+
+                    contracts = _d(pos_str).copy_abs()
+                    sgn = _d(1) if side == "long" else _d(-1)
+                    pnl_d = (last_px - avg_px) * contracts * ct_val * sgn
+                    pnl = _fmt_decimal(pnl_d)
+                else:
+                    pnl = _fmt_decimal(_d(pnl))
+
+                # USDT-эквивалент
+                notional_usd = p.get("notionalUsd")
+                if notional_usd is None or notional_usd == "":
+                    if inst_id not in ticker_cache:
+                        ticker_cache[inst_id] = await self._get_ticker(inst_id)
+                    t = ticker_cache[inst_id]
+                    last_px = _d(t.get("last") or t.get("askPx") or t.get("bidPx") or "0")
+                    if inst_id not in ins_cache:
+                        ins_cache[inst_id] = await self._get_instrument(inst_id)
+                    ins = ins_cache[inst_id]
+                    ct_val = _d(ins.get("ctVal", "1"))
+                    contracts = _d(pos_str).copy_abs()
+                    usdt_val = contracts * ct_val * last_px
+                    usdt_str = _fmt_decimal(usdt_val)
+                else:
+                    usdt_str = _fmt_decimal(_d(notional_usd))
+
+                result.append({
+                    "opened_at": opened_at,
+                    "symbol": coin,
+                    "side": side,
+                    "usdt": usdt_str,
+                    "leverage": str(leverage),
+                    "pnl": pnl,
+                })
+            except Exception:
+                continue
+
+        return result or None
+
+
+# # ------------------ пример использования ------------------
+async def main():
+    client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
+    try:
+        symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
+
+        # открыть сделки (пример):
+        # r = await client.open_long_usdt(symbol, 10, leverage=5)
+        # print("OPEN LONG:", r)
+        # r = await client.open_short_usdt(symbol, 10, leverage=5)
+        # print("OPEN SHORT:", r)
+
+        # pos = await client.get_open_positions()
+        # print("OPEN POSITIONS:", pos)
+
+        # --- ПОЛНОЕ закрытие одной функцией ---
+        # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
+        r = await client.close_all_positions(symbol)
+        print("CLOSE ALL SIDES:", r)
+
+    finally:
+        await client.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())

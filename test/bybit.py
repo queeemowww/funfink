@@ -1,0 +1,1 @@
+print("BTC_USDT".replace("_", ""))
