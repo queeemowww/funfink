@@ -23,6 +23,8 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 import os
+from pathlib import Path
+import sys
 
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -114,7 +116,7 @@ class Logic():
         #время
         self.check_price_start=5
         self.check_price_finish=44
-        self.minutes_for_start_parse=46
+        self.minutes_for_start_parse=45
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -333,8 +335,6 @@ class Logic():
             price= self.get_last_price_mexc(symbol)
         elif exchange=="kucoin_futures":
             price= self.get_last_price_kucoin(symbol)
-        
-        
         
         return price
 
@@ -831,7 +831,8 @@ class Logic():
 
             # Пример: смотреть топ-20 «лучших» по метрике
             result_sorted=result.sort_values('funding_diff_metric', ascending=False)
-            result_sorted.to_csv('temp_data/result_sorted'+ datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv", index=False, encoding="utf-8")   
+            self.res_sorted_dir = 'temp_data/result_sorted'+ datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
+            result_sorted.to_csv(self.res_sorted_dir, index=False, encoding="utf-8")   
             print(result_sorted.head(5))
             headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -1234,8 +1235,22 @@ class Logic():
                 print(f"⏸ Сейчас {now.strftime('%H:%M')} — вне окна (ждём 5-ю минуту)")
                 await asyncio.sleep(60)
 
-                
-                continue
+
+            "УДАЛЕНИЕ ВРЕМЕННЫХ НЕНУЖНЫХ ФАЙЛОВ"
+            base = Path('temp_data')
+            files = [p for p in base.iterdir() if p.is_file()]
+            if len(files) >= 4:
+                files_sorted = sorted(files, key=lambda p: p.stat().st_mtime)
+                # Берём ДВА самых старых
+                to_delete = files_sorted[:2]
+
+                for f in to_delete:
+                    try:
+                        os.remove(f)
+                        print(f"[OK] Удалён: {f.name}")
+                    except Exception as e:
+                        print(f"[ERR] Не удалось удалить {f.name}: {e}")
+
     async def main(self):
         await asyncio.gather(self.run_window(), self.run_at_50())
 
