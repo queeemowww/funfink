@@ -415,6 +415,8 @@ class Logic():
                 
         except Exception:
             print("Ебануло")
+            
+
         
         ftime = None
     
@@ -465,7 +467,9 @@ class Logic():
             "funding_time": self.to_dt_ms(fts),
             "next_funding_time": self.to_dt_ms(nft),
             "raw_note": f"instId={inst_id}",
+
         }
+
 
     async def fetch_bitget(self,client, row):
         s = row["symbol"]
@@ -560,6 +564,7 @@ class Logic():
             last_exc = e
         return {"funding_rate": None, "next_funding_rate": None, "funding_time": None, "raw_note": f"kucoin_fail: {last_exc}"}
 
+
     async def fetch_gateio(self,client: httpx.AsyncClient, row: dict) -> dict:
         """
         Gate.io: данные по контракту содержат текущий funding_rate и next_funding_time.
@@ -583,6 +588,7 @@ class Logic():
             "raw_note": d,
         }
 
+
     async def fetch_htx(self,client: httpx.AsyncClient, row: dict) -> dict:
 
         sym = row["symbol"]
@@ -601,6 +607,7 @@ class Logic():
             "funding_time": self.ensure_str(ft),
             "raw_note": data,
         }
+
 
     def normalize_exchange_name(self,x: str) -> str:
         s = x.lower()
@@ -633,6 +640,7 @@ class Logic():
             "next_funding_time": None,
             "funding_time": None,
             "raw_note": None,
+            
         }
         if not fn:
             base_result["raw_note"] = "unsupported_exchange"
@@ -892,6 +900,10 @@ class Logic():
             now = datetime.now(timezone.utc)
             hour_ago = now - timedelta(hours=1)
 
+            
+
+            
+            
             #Основная логика
             mask_active=logs_df_c[logs_df_c['status']=='active']
 
@@ -938,9 +950,6 @@ class Logic():
                         logs_df.loc[idx, 'status'] = 'closed'
             logs_df.to_csv(self.logs_path, index=False)           
                         
-
-
-
             i=0 
             while i<=len(df_result)-1 and df_result.iloc[i]['funding_diff_metric']>self.demanded_funding_rev:
                  
@@ -948,8 +957,6 @@ class Logic():
                 sym = row['symbol']
                 print(sym)
                 if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
-                    print("ЭЛИФ 0", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
-
                     f_long, f_short = self.get_prices_parallel(
         df_result.iloc[i]['min_exchange'],
         df_result.iloc[i]['max_exchange'],
@@ -961,8 +968,7 @@ class Logic():
 
                 #если время разное, ищем биржу с лучшим diff
                 #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
-                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
-                    print("СУУКА ЭЛИФ 1", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
                     possible_exhanges=df_funding1_s[
             (df_funding1_s['symbol_n'] == sym) &
             (df_funding1_s['funding_time'] >= hour_ago) &
@@ -998,11 +1004,11 @@ class Logic():
                     
 
                 #Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене   
-                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
-                    print("#Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене ЭЛИФ2", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
                     possible_exhanges=df_funding1_s[
             (df_funding1_s['symbol_n'] == sym) &
             (df_funding1_s['funding_time'] >= hour_ago) &
+            (df_funding1_s['exchange'] != 'htx')&
             (df_funding1_s['exchange'] != df_result.iloc[i]['min_exchange'])
         ]['exchange'].unique().tolist()
                     print(possible_exhanges)
