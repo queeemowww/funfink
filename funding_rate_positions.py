@@ -115,8 +115,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=5
-        self.check_price_finish=44
-        self.minutes_for_start_parse=46
+        self.check_price_finish=51
+        self.minutes_for_start_parse=52
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -961,12 +961,12 @@ class Logic():
 
                 #если время разное, ищем биржу с лучшим diff
                 #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
-                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
                     print("СУУКА ЭЛИФ 1", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
                     possible_exhanges=df_funding1_s[
             (df_funding1_s['symbol_n'] == sym) &
             (df_funding1_s['funding_time'] >= hour_ago) &
-            (df_funding1_s['exchange'] != df_result.iloc[i]['max_exchange'])
+            (df_funding1_s['exchange'] != df_result.iloc[i]['min_exchange'])
         ]['exchange'].unique().tolist()
                     print(possible_exhanges)
                     exchange_list=[]
@@ -998,12 +998,12 @@ class Logic():
                     
 
                 #Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене   
-                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
                     print("#Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене ЭЛИФ2", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
                     possible_exhanges=df_funding1_s[
             (df_funding1_s['symbol_n'] == sym) &
             (df_funding1_s['funding_time'] >= hour_ago) &
-            (df_funding1_s['exchange'] != df_result.iloc[i]['min_exchange'])
+            (df_funding1_s['exchange'] != df_result.iloc[i]['max_exchange'])
         ]['exchange'].unique().tolist()
                     print(possible_exhanges)
                     exchange_list=[]
@@ -1228,7 +1228,7 @@ class Logic():
             "УДАЛЕНИЕ ВРЕМЕННЫХ НЕНУЖНЫХ ФАЙЛОВ"
             base = Path('temp_data')
             files = [p for p in base.iterdir() if p.is_file()]
-            if len(files) >= 4:
+            if len(files) >= 8:
                 files_sorted = sorted(files, key=lambda p: p.stat().st_mtime)
                 # Берём ДВА самых старых
                 to_delete = files_sorted[:2]
