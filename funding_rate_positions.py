@@ -60,8 +60,8 @@ KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 
 class Calc():
     def __init__(self):
-        self.size = 20
-        self.leverage = 1
+        self.size = 100
+        self.leverage = 2
         self.dict = {
             "bitget": BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE),
             "bybit": BybitAsyncClient(BYBIT_API_KEY, BYBIT_API_SECRET, testnet=False),
@@ -115,8 +115,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=5
-        self.check_price_finish=51
-        self.minutes_for_start_parse=52
+        self.check_price_finish=44
+        self.minutes_for_start_parse=45
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -947,89 +947,86 @@ class Logic():
                 row = df_result.iloc[i]
                 sym = row['symbol']
                 print(sym)
-                if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
-                    print("ЭЛИФ 0", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
+                # if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
+                #     print("ЭЛИФ 0", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
 
-                    f_long, f_short = self.get_prices_parallel(
-        df_result.iloc[i]['min_exchange'],
-        df_result.iloc[i]['max_exchange'],
-        df_result.iloc[i]['symbol']
-    )
-                    diff_f=(f_long-f_short)/f_long*100
-                    long_ex = row['min_exchange']
-                    short_ex = row['max_exchange']
+                f_long, f_short = self.get_prices_parallel(
+    df_result.iloc[i]['min_exchange'],
+    df_result.iloc[i]['max_exchange'],
+    df_result.iloc[i]['symbol']
+)
+                diff_f=(f_long-f_short)/f_long*100
+                long_ex = row['min_exchange']
+                short_ex = row['max_exchange']
 
                 #если время разное, ищем биржу с лучшим diff
                 #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
-                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
-                    print("СУУКА ЭЛИФ 1", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
-                    possible_exhanges=df_funding1_s[
-            (df_funding1_s['symbol_n'] == sym) &
-            (df_funding1_s['funding_time'] >= hour_ago) &
-            (df_funding1_s['exchange'] != df_result.iloc[i]['min_exchange'])
-        ]['exchange'].unique().tolist()
-                    print(possible_exhanges)
-                    exchange_list=[]
-                    with ThreadPoolExecutor(max_workers=len(possible_exhanges)) as executor:
-                        futures = {
-                            executor.submit(self.get_futures_last_prices, exchange, sym): exchange
-                            for exchange in possible_exhanges
-                        }
+                # else:
+                #     print("СУУКА ЭЛИФ 1", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
+        #             possible_exhanges=df_funding1_s[
+        #     (df_funding1_s['symbol_n'] == sym) &
+        #     (df_funding1_s['funding_time'] >= hour_ago) &
+        #     (df_funding1_s['exchange'] != df_result.iloc[i]['max_exchange'])
+        # ]['exchange'].unique().tolist()
+                    # print(possible_exhanges)
+                    # exchange_list=[]
+                    # with ThreadPoolExecutor(max_workers=len(possible_exhanges)) as executor:
+                    #     futures = {
+                    #         executor.submit(self.get_futures_last_prices, exchange, sym): exchange
+                    #         for exchange in possible_exhanges
+                    #     }
 
-                        for future in as_completed(futures):
-                            exchange = futures[future]
-                            try:
-                                price = future.result()
-                            except Exception as e:
-                                print(f"Ошибка получения цены для {exchange}: {e}")
-                                price = 0
-                            exchange_list.append({"exchange": exchange, "price": price})
+                    #     for future in as_completed(futures):
+                    #         exchange = futures[future]
+                    #         try:
+                    #             price = future.result()
+                    #         except Exception as e:
+                    #             print(f"Ошибка получения цены для {exchange}: {e}")
+                    #             price = 0
+                    #         exchange_list.append({"exchange": exchange, "price": price})
                         
-                    long_ex = min(exchange_list, key=lambda x: x["price"])["exchange"]
-                    
-                    f_long, f_short = self.get_prices_parallel(
-        long_ex,
-        df_result.iloc[i]['max_exchange'],
-        df_result.iloc[i]['symbol']
-    )
-
-                    short_ex=df_result.iloc[i]['max_exchange']
-                    diff_f=(f_long-f_short)/f_long*100
+    #                 long_ex = df_result.iloc[i]['min_exchange']
+    #                 short_ex=df_result.iloc[i]['max_exchange']
+    #                 f_long, f_short = self.get_prices_parallel(
+    #     long_ex,
+    #     df_result.iloc[i]['max_exchange'],
+    #     df_result.iloc[i]['symbol']
+    # )
+    #                 diff_f=(f_long-f_short)/f_long*100
                     
 
                 #Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене   
-                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
-                    print("#Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене ЭЛИФ2", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
-                    possible_exhanges=df_funding1_s[
-            (df_funding1_s['symbol_n'] == sym) &
-            (df_funding1_s['funding_time'] >= hour_ago) &
-            (df_funding1_s['exchange'] != df_result.iloc[i]['max_exchange'])
-        ]['exchange'].unique().tolist()
-                    print(possible_exhanges)
-                    exchange_list=[]
-                    with ThreadPoolExecutor(max_workers=len(possible_exhanges)) as executor:
-                        futures = {
-                            executor.submit(self.get_futures_last_prices, exchange, sym): exchange
-                            for exchange in possible_exhanges
-                        }
-
-                        for future in as_completed(futures):
-                            exchange = futures[future]
-                            try:
-                                price = future.result()
-                            except Exception as e:
-                                print(f"Ошибка получения цены для {exchange}: {e}")
-                                price = 0
-                            exchange_list.append({"exchange": exchange, "price": price})
-                    short_ex = max(exchange_list, key=lambda x: x["price"])["exchange"]
-                    print(short_ex)
-                    f_long, f_short = self.get_prices_parallel(
-        df_result.iloc[i]['min_exchange'],
-        max(exchange_list, key=lambda x: x["price"])["exchange"],
-        df_result.iloc[i]['symbol']
-    )
-                    long_ex= df_result.iloc[i]['min_exchange']
-                    diff_f=(f_long-f_short)/f_long*100
+    #             elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
+    #                 print("#Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене ЭЛИФ2", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
+    #     #             possible_exhanges=df_funding1_s[
+    #     #     (df_funding1_s['symbol_n'] == sym) &
+    #     #     (df_funding1_s['funding_time'] >= hour_ago) &
+    #     #     (df_funding1_s['exchange'] != df_result.iloc[i]['min_exchange'])
+    #     # ]['exchange'].unique().tolist()
+    #     #             print(possible_exhanges)
+    #     #             exchange_list=[]
+    #     #             with ThreadPoolExecutor(max_workers=len(possible_exhanges)) as executor:
+    #     #                 futures = {
+    #     #                     executor.submit(self.get_futures_last_prices, exchange, sym): exchange
+    #     #                     for exchange in possible_exhanges
+    #     #                 }
+    #     #                 for future in as_completed(futures):
+    #     #                     exchange = futures[future]
+    #     #                     try:
+    #     #                         price = future.result()
+    #     #                     except Exception as e:
+    #     #                         print(f"Ошибка получения цены для {exchange}: {e}")
+    #     #                         price = 0
+    #     #                     exchange_list.append({"exchange": exchange, "price": price})
+    #                 short_ex = df_result.iloc[i]['max_exchange']
+    #                 print(short_ex)
+    #                 f_long, f_short = self.get_prices_parallel(
+    #     df_result.iloc[i]['min_exchange'],
+    #     max(exchange_list, key=lambda x: x["price"])["exchange"],
+    #     df_result.iloc[i]['symbol']
+    # )
+    #                 long_ex= df_result.iloc[i]['min_exchange']
+    #                 diff_f=(f_long-f_short)/f_long*100
                     
                 
                 if self.pair_already_logged(long_ex, short_ex, logs_df,sym):
