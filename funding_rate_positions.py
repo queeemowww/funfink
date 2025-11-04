@@ -124,8 +124,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=5
-        self.check_price_finish=9
-        self.minutes_for_start_parse=10
+        self.check_price_finish=14
+        self.minutes_for_start_parse=15
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
