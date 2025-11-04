@@ -67,11 +67,11 @@ class HTXAsyncClient:
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
         self.base_url   = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=timeout,
-            verify=CUSTOM_BUNDLE if os.path.exists(CUSTOM_BUNDLE) else certifi.where(),
-            trust_env=True,
+        self.client = httpx.AsyncClient(
+            base_url="https://api.hbdm.com",
+            timeout=15,
+            verify="/etc/ssl/certs/custom-certifi-plus-hbdm.pem",
+            trust_env=True
         )
         self._retry_lev = int(default_retry_leverage)
 
