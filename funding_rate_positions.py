@@ -871,11 +871,12 @@ class Logic():
 
             for i in range(5):
                 if i == 0:
-                    text.append(f"""💰БАЛАНС: {round(self.all_balance, 2)} USDT\n🟠BYBIT: {self.balance.get('bybit'):.2f}\n
-                    🔵BITGET: {self.balance.get('bitget'):.2f}\n
-                    ⚫OKX: {self.balance.get('okx'):.2f}\n
-                    ⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
-                    🟢GATE: {self.balance.get('gate'):.2f}\n\n 
+                    text.append(f"""💰БАЛАНС: {round(self.all_balance, 2)} USDT\n
+🟠BYBIT: {self.balance.get('bybit'):.2f}\n
+🔵BITGET: {self.balance.get('bitget'):.2f}\n
+⚫OKX: {self.balance.get('okx'):.2f}\n
+⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
+🟢GATE: {self.balance.get('gate'):.2f}\n\n 
                     🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n{analyze(analytical_df['symbol'].iloc[i])}""")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
