@@ -537,6 +537,34 @@ class BybitAsyncClient:
 
         return out or None
 
+    async def get_usdt_balance(self) -> str:
+        """
+        Возвращает общий баланс (equity) в USDT (строкой, без лишних нулей).
+        Сначала пробуем UNIFIED, затем (если пусто) CONTRACT.
+        """
+        async def _fetch(account_type: str) -> List[Dict[str, Any]]:
+            data = await self._get_private(
+                "/v5/account/wallet-balance",
+                {"accountType": account_type, "coin": "USDT"}
+            )
+            return (data.get("result", {}) or {}).get("list", []) or []
+
+        total = _d("0")
+
+        # 1) UNIFIED
+        rows = await _fetch("UNIFIED")
+        if not rows:
+            # 2) CONTRACT (для не-UTA аккаунтов)
+            rows = await _fetch("CONTRACT")
+
+        for row in rows:
+            for c in row.get("coin", []) or []:
+                if (c.get("coin") or "").upper() == "USDT":
+                    # Берём equity (включает uPnL). Если нет — fallback на walletBalance.
+                    total += _d(c.get("equity") or c.get("walletBalance") or "0")
+
+        return _trim_decimals(total.normalize())
+
 
 
 # ---- Пример использования ----
@@ -545,7 +573,7 @@ async def main():
     async with BybitAsyncClient(API_KEY, API_SECRET, testnet=False) as client:
         # Открыть для примера
         # print(await client.open_long_usdt(symbol, 10, leverage=5))
-        print(await client.open_short_usdt(symbol, 20, leverage=1))
+        # print(await client.open_short_usdt(symbol, 20, leverage=1))
 
         # Посмотреть открытые позиции
         # positions = await client.get_open_positions(symbol=symbol)
@@ -558,6 +586,7 @@ async def main():
         # Или по отдельности:
         # await client.close_long_all(symbol)
         # await client.close_short_all(symbol)
+        print(float(await client.get_usdt_balance()))
 
 if __name__ == "__main__":
     asyncio.run(main())

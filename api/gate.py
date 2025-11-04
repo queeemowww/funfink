@@ -397,6 +397,15 @@ class GateAsyncFuturesClient:
         size = await self.usdt_to_size(symbol, usdt_amount, side="sell")
         return await self.open_short(symbol, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
 
+    async def get_usdt_balance(self) -> str:
+        """
+        Возвращает общий баланс (equity) в USDT для фьючерсного аккаунта (settle=usdt).
+        Берём поле 'equity', fallback на 'total'/'balance' если вдруг нет.
+        """
+        acc = await self._get_account()  # GET /futures/{settle}/accounts
+        total = _d(acc.get("equity") or acc.get("total") or acc.get("balance") or "0")
+        return _trim_decimals(total.normalize())
+
 
 # ---- пример использования ----
 async def main():
@@ -420,8 +429,9 @@ async def main():
         # print("OPEN POS:", positions)
 
         # # закрыть всё (корректно работает и в dual, и в single)
-        res = await gate.close_all_positions(contract)
-        print("CLOSE ALL:", res)
+        # res = await gate.close_all_positions(contract)
+        # print("CLOSE ALL:", res)
+        print(float(await gate.get_usdt_balance()))
 
 if __name__ == "__main__":
     asyncio.run(main())

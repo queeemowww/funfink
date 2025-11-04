@@ -509,6 +509,19 @@ class BitgetAsyncClient:
             })
         return out or None
 
+    async def get_usdt_balance(self) -> str:
+        """
+        Возвращает общий баланс (equity) в USDT для UMCBL (sum(usdtEquity)).
+        Возвращает строку-число без лишних нулей, например: "123.45".
+        """
+        data = await self._get("/api/mix/v1/account/accounts", {"productType": self.product_type})
+        rows = data.get("data") or []
+        total = _d("0")
+        for r in rows:
+            total += _d(r.get("usdtEquity") or r.get("equity") or "0")
+        return _trim_decimals(total.normalize())
+
+
 
 # # ---- Пример использования ----
 async def main():
@@ -525,8 +538,10 @@ async def main():
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
         # # Закрыть и лонг, и шорт целиком (если есть)
-        res = await client.close_all_positions(symbol)
-        print("CLOSE ALL:", res)
+        # res = await client.close_all_positions(symbol)
+        # print("CLOSE ALL:", res)
+
+        print(float(await client.get_usdt_balance()))
 
 if __name__ == "__main__":
     asyncio.run(main())

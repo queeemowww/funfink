@@ -875,6 +875,47 @@ class KucoinAsyncFuturesClient:
 
         return out or None
 
+    async def get_usdt_balance(self) -> str:
+        """
+        Вернёт ТОЛЬКО доступный торговый баланс в USDT (available) как строку.
+        Источник: GET /api/v1/account-overview?currency=USDT
+
+        Поля у KuCoin Futures могут называться по-разному у разных аккаунтов:
+        - "availableBalance" (основное)
+        - "availableMargin" / "available" (варианты)
+        - фолбэк на "cashBalance" - удерживая смысл "свободно"
+        """
+        # 1) основной эндпоинт с явной валютой
+        data = await self._private("GET", "/api/v1/account-overview", query={"currency": "USDT"})
+        info = data.get("data") or {}
+
+        def _pick(*keys: str) -> Decimal:
+            for k in keys:
+                v = info.get(k)
+                if v is not None:
+                    try:
+                        return _d(v)
+                    except Exception:
+                        continue
+            return _d(0)
+
+        # пытаемся вытащить именно доступные средства
+        available = _pick("availableBalance", "availableMargin", "available", "cashBalance")
+        if available > 0:
+            return format(available, "f")
+
+        # 2) редкий фолбэк: без currency (на всякий случай)
+        data2 = await self._private("GET", "/api/v1/account-overview")
+        info2 = data2.get("data") or {}
+        available2 = _d(str(
+            info2.get("availableBalance")
+            or info2.get("availableMargin")
+            or info2.get("available")
+            or info2.get("cashBalance")
+            or "0"
+        ))
+        return format(available2, "f")
+
 
 # ---- простая отладка ----
 async def _example():
@@ -898,7 +939,8 @@ async def _example():
         # print("OPEN POS:", await kc.get_open_positions(sym))
 
         # # попробовать закрыть обе стороны
-        print("CLOSE ALL:", await kc.close_all_positions(sym))
+        # print("CLOSE ALL:", await kc.close_all_positions(sym))
+        print(float(await kc.get_usdt_balance()))
 
 
 if __name__ == "__main__":

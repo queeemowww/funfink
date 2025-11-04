@@ -106,6 +106,7 @@ class Logic():
      # загружаем переменные из .env
 
     #Подставь свои директории
+        self.balance = 0
         self.df_pairs_dir='data/symbols_cleared.csv'
         self.out_csv_dir="temp_data/funding_rates" # куда сохраняем
         self.logs_path ='data/logs.csv'
@@ -853,9 +854,13 @@ class Logic():
                     return("Сегодня без мема(")
             analytical_df=result_sorted.head(5)
             text=[]
+
+            for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+                self.balance += float(await self.c.dict[ex].get_usdt_balance())
+
             for i in range(5):
                 if i == 0:
-                    text.append(f" 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n{analyze(analytical_df['symbol'].iloc[i])}")
+                    text.append(f"*БАЛАНС: {self.balance} USDT*\n\n 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n{analyze(analytical_df['symbol'].iloc[i])}")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
                 max_time = (analytical_df['max_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
@@ -938,9 +943,6 @@ class Logic():
                         logs_df.loc[idx, 'status'] = 'closed'
             logs_df.to_csv(self.logs_path, index=False)           
                         
-
-
-
             i=0 
             while i<=len(df_result)-1 and df_result.iloc[i]['funding_diff_metric']>self.demanded_funding_rev:
                  

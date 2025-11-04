@@ -749,6 +749,53 @@ class OKXAsyncClient:
                 continue
 
         return result or None
+    
+        # ------------------ баланс аккаунта (USDT) ------------------
+    async def get_usdt_balance(self) -> str:
+        """
+        Возвращает Доступный баланс аккаунта в USDT (строкой).
+        Приоритет полей OKX:
+          1) availBal — доступный баланс (если есть),
+          2) availEq   — доступная эквити (в unified-аккаунте),
+          3) cashBal   — кэш-баланс,
+          4) eq        — полная эквити по валюте.
+        Если по какой-то причине в details нет полей — пытается взять totalEq.
+        """
+        raw = await self._request_private(
+            "GET",
+            "/api/v5/account/balance",
+            params={"ccy": "USDT"},
+        )
+        data = raw.get("data") or []
+        if not data:
+            raise RuntimeError(f"OKX balance error: empty response | {raw}")
+
+        acc = data[0]
+        details = acc.get("details") or []
+        bal_val = None
+
+        # Ищем конкретно по USDT
+        for d in details:
+            if (d.get("ccy") or "").upper() != "USDT":
+                continue
+            # Берём первое доступное по приоритету
+            for key in ("availBal", "availEq", "cashBal", "eq"):
+                v = d.get(key)
+                if v not in (None, ""):
+                    bal_val = v
+                    break
+            break
+
+        # Фолбэк: totalEq (в unified обычно в USD-эквиваленте; для USDT ≈ USDT)
+        if bal_val in (None, ""):
+            total_eq = acc.get("totalEq")
+            if total_eq not in (None, ""):
+                bal_val = total_eq
+
+        if bal_val in (None, ""):
+            raise RuntimeError(f"OKX balance parse error: {raw}")
+
+        return _fmt_decimal(_d(bal_val))
 
 
 # # ------------------ пример использования ------------------
@@ -760,8 +807,8 @@ async def main():
         # открыть сделки (пример):
         # r = await client.open_long_usdt(symbol, 50, leverage=1)
         # print("OPEN LONG:", r)
-        r = await client.open_short_usdt(symbol, 50, leverage=1)
-        print("OPEN SHORT:", r)
+        # r = await client.open_short_usdt(symbol, 50, leverage=1)
+        # print("OPEN SHORT:", r)
 
         # pos = await client.get_open_positions()
         # print("OPEN POSITIONS:", pos)
@@ -770,6 +817,8 @@ async def main():
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
         # r = await client.close_all_positions(symbol)
         # print("CLOSE ALL SIDES:", r)
+
+        print(float(await client.get_usdt_balance()))
 
     finally:
         await client.close()

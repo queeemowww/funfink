@@ -641,6 +641,76 @@ class HTXAsyncClient:
         return out or None
 
 
+    async def get_usdt_balance(self) -> str:
+        """
+        Вернёт ТОЛЬКО доступный торговый баланс в USDT (available) как строку.
+        Алгоритм:
+          1) пробуем v3 GET /linear-swap-api/v3/unified_account_info
+          2) если не вышло — v1 POST /linear-swap-api/v1/swap_account_info (margin_account=USDT)
+        """
+        # ---- helper to call v3/v1 независимо от твоей реализации приватных вызовов ----
+        async def _call(method: str, path: str, *, query=None, body=None) -> Dict[str, Any]:
+            if hasattr(self, "_private_call"):
+                return await self._private_call(method, path, query=query, body=body)
+            # fallback: старый приватный пост только для v1
+            if method.upper() == "POST":
+                return await self._private_post(path, body=body, query=query)
+            # v3 требует GET с подписью в query — эмулируем через _signed_params
+            sp = self._signed_params("GET", path, query or {})
+            r = await self._client.get(path, params=sp)
+            r.raise_for_status()
+            return r.json()
+
+        # ---- 1) v3 unified_account_info ----
+        v3_err = None
+        try:
+            d3 = await _call("GET", "/linear-swap-api/v3/unified_account_info", query={}, body=None)
+            # успешные коды у v3 обычно 0 или 200
+            code = str(d3.get("code", ""))
+            if code in ("0", "200"):
+                info = d3.get("data")
+                if isinstance(info, list):
+                    picked = None
+                    for it in info:
+                        cur = (it.get("margin_asset") or it.get("margin_account") or it.get("trade_partition") or "").upper()
+                        if "USDT" in cur or cur == "USDT":
+                            picked = it
+                            break
+                    info = picked or (info[0] if info else None)
+                if isinstance(info, dict):
+                    for k in ("withdraw_available", "available_balance", "margin_available"):
+                        if info.get(k) is not None:
+                            return format(_d(info[k]), "f")
+                raise RuntimeError(f"unified_account_info malformed: {d3}")
+            else:
+                raise RuntimeError(f"v3 error: {d3}")
+        except Exception as e:
+            v3_err = e
+
+        # ---- 2) v1 swap_account_info ----
+        try:
+            d1 = await _call("POST", "/linear-swap-api/v1/swap_account_info", body={"margin_account": "USDT"})
+            # v1 success формат: {"status":"ok", "data":[...]}
+            if d1.get("status") == "ok":
+                arr = d1.get("data") or []
+                if not isinstance(arr, list):
+                    arr = [arr] if arr else []
+                info = None
+                for it in arr:
+                    cur = (it.get("margin_asset") or it.get("symbol") or it.get("margin_account") or "").upper()
+                    if "USDT" in cur or cur == "USDT":
+                        info = it
+                        break
+                info = info or (arr[0] if arr else None)
+                if isinstance(info, dict):
+                    for k in ("withdraw_available", "margin_available", "available_balance"):
+                        if info.get(k) is not None:
+                            return format(_d(info[k]), "f")
+            raise RuntimeError(f"v1 error or empty: {d1}")
+        except Exception as v1_err:
+            raise RuntimeError(f"HTX balance error (both v3 and v1 failed): v3={v3_err} | v1={v1_err}")
+
+
 # ---- simple debug example ----
 async def _example():
     symbol = "BIOUSDT"
@@ -651,7 +721,8 @@ async def _example():
         # print("POSITIONS:", await htx.get_open_positions(symbol))
 
         # # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        print("CLOSE ALL:", await htx.close_all_positions(symbol))
+        # print("CLOSE ALL:", await htx.close_all_positions(symbol))
+        print(float(await htx.get_usdt_balance()))
 
 
 if __name__ == "__main__":
