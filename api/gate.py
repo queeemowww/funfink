@@ -375,26 +375,32 @@ class GateAsyncFuturesClient:
         return await self._create_order(contract=contract, size=abs(short_sz), price=None,
                                         tif="ioc", reduce_only=True, close=False, text=client_tag)
 
-    async def close_all_positions(self, contract: str) -> Dict[str, Optional[Dict[str, Any]]]:
-        r1 = await self.close_long_all(contract)
-        r2 = await self.close_short_all(contract)
+    async def close_all_positions(self, symbol: str) -> Dict[str, Optional[Dict[str, Any]]]:
+        symbol = re.split("USDT", symbol)[0]
+        symbol = symbol + "_USDT"
+        r1 = await self.close_long_all(symbol)
+        r2 = await self.close_short_all(symbol)
         return {"long_closed": r1, "short_closed": r2}
 
     # ------------ удобные обёртки с USDT ------------
-    async def open_long_usdt(self, contract: str, usdt_amount: float | str, *,
+    async def open_long_usdt(self, symbol: str, usdt_amount: float | str, *,
                               leverage: Optional[int|str]=None, client_tag: Optional[str]=None) -> Dict[str, Any]:
-        size = await self.usdt_to_size(contract, usdt_amount, side="buy")
-        return await self.open_long(contract, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
+        symbol = re.split("USDT", symbol)[0]
+        symbol = symbol + "_USDT"
+        size = await self.usdt_to_size(symbol, usdt_amount, side="buy")
+        return await self.open_long(symbol, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
 
-    async def open_short_usdt(self, contract: str, usdt_amount: float | str, *,
+    async def open_short_usdt(self, symbol: str, usdt_amount: float | str, *,
                                leverage: Optional[int|str]=None, client_tag: Optional[str]=None) -> Dict[str, Any]:
-        size = await self.usdt_to_size(contract, usdt_amount, side="sell")
-        return await self.open_short(contract, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
+        symbol = re.split("USDT", symbol)[0]
+        symbol = symbol + "_USDT"
+        size = await self.usdt_to_size(symbol, usdt_amount, side="sell")
+        return await self.open_short(symbol, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
 
 
 # ---- пример использования ----
 async def main():
-    contract = "BIOUSDT"  # формат Gate: BASE_QUOTE
+    contract = "SIGNUSDT"  # формат Gate: BASE_QUOTE
     contract = re.split("USDT", contract)[0]
     contract = contract + "_USDT"
     print(contract)

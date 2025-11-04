@@ -60,8 +60,8 @@ KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 
 class Calc():
     def __init__(self):
-        self.size = 100
-        self.leverage = 2
+        self.size = 50
+        self.leverage = 1
         self.dict = {
             "bitget": BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE),
             "bybit": BybitAsyncClient(BYBIT_API_KEY, BYBIT_API_SECRET, testnet=False),
@@ -115,8 +115,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=5
-        self.check_price_finish=44
-        self.minutes_for_start_parse=45
+        self.check_price_finish=9
+        self.minutes_for_start_parse=10
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -130,7 +130,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.4
+        self.demanded_funding_rev=0.1
         self.c=Calc()
 
 # ===== Утилиты =====
@@ -1241,6 +1241,5 @@ class Logic():
         await asyncio.gather(self.run_window(), self.run_at_50())
 
 if __name__ == "__main__":
-
     asyncio.run(Logic().main())
 

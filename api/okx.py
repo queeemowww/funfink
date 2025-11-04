@@ -15,6 +15,21 @@ from typing import Optional, Literal, Dict, Any, List, Tuple
 
 import httpx
 from dotenv import load_dotenv
+# --- в начале файла рядом с импортами ---
+import math
+import random as _random
+from httpx import ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError, HTTPStatusError
+
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_TRIES = 4  # 1 + 3 повтора
+BASE_BACKOFF = 0.35  # сек, потом *2, + небольшие джиттеры
+
+def _backoff_sleep(attempt: int) -> float:
+    # attempt: 1..N
+    # 0.35, 0.7, 1.4 ... + jitter (0..0.2)
+    return BASE_BACKOFF * (2 ** (attempt - 1)) + _random.uniform(0.0, 0.2)
+
+
 
 load_dotenv()
 
@@ -73,12 +88,20 @@ class OKXAsyncClient:
         self.api_secret = api_secret.encode("utf-8")  # байты для HMAC
         self.passphrase = passphrase
         self.base_url = "https://www.okx.com"
-
+        # --- В __init__ клиента: замените создание AsyncClient ---
+        limits = httpx.Limits(max_connections=100, max_keepalive_connections=30)
+        timeout = httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0)  # <— плотнее, чем дефолт
         headers = {"Content-Type": "application/json"}
         if OKX_SIMULATED == "1":
             headers["x-simulated-trading"] = "1"
 
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, headers=headers)
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            headers=headers,
+            limits=limits,
+            http2=True,
+        )
 
     async def close(self):
         await self._client.aclose()
@@ -94,6 +117,29 @@ class OKXAsyncClient:
         mac = hmac.new(self.api_secret, prehash, hashlib.sha256).digest()
         return base64.b64encode(mac).decode()
 
+    # --- ДОБАВЬ новый универсальный паблик GET с ретраями ---
+    async def _get_public(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        last_exc = None
+        for attempt in range(1, MAX_TRIES + 1):
+            try:
+                r = await self._client.get(path, params=params or {})
+                # вручную проверим статусы для ретраев
+                if r.status_code in RETRYABLE_STATUS:
+                    raise HTTPStatusError("retryable status", request=r.request, response=r)
+                r.raise_for_status()
+                data = r.json()
+                return data
+            except (ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError, HTTPStatusError) as e:
+                last_exc = e
+                if attempt >= MAX_TRIES:
+                    raise
+                await asyncio.sleep(_backoff_sleep(attempt))
+        # на всякий
+        if last_exc:
+            raise last_exc
+
+
+    # --- ПЕРЕПИШИ _request_private: ретраи + подпиcь на каждую попытку ---
     async def _request_private(
         self,
         method: Literal["GET", "POST"],
@@ -102,43 +148,57 @@ class OKXAsyncClient:
         params: Dict[str, Any] | None = None,
         body: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        ts = self._ts_iso()
-        if method == "GET":
-            body_or_query = ""
-            if params:
-                from urllib.parse import urlencode
-                qs = "?" + urlencode(params, doseq=True)
-                body_or_query = qs
-            sign = self._sign(ts, method, path + body_or_query, "")
-            headers = {
-                "OK-ACCESS-KEY": self.api_key,
-                "OK-ACCESS-SIGN": sign,
-                "OK-ACCESS-TIMESTAMP": ts,
-                "OK-ACCESS-PASSPHRASE": self.passphrase,
-            }
-            if OKX_SIMULATED == "1":
-                headers["x-simulated-trading"] = "1"
-            r = await self._client.get(path, headers=headers, params=params or {})
-        else:
-            payload = json.dumps(body or {}, separators=(",", ":"), ensure_ascii=False)
-            sign = self._sign(ts, method, path, payload)
-            headers = {
-                "OK-ACCESS-KEY": self.api_key,
-                "OK-ACCESS-SIGN": sign,
-                "OK-ACCESS-TIMESTAMP": ts,
-                "OK-ACCESS-PASSPHRASE": self.passphrase,
-                "Content-Type": "application/json",
-            }
-            if OKX_SIMULATED == "1":
-                headers["x-simulated-trading"] = "1"
-            r = await self._client.post(path, headers=headers, content=payload)
+        last_exc = None
+        for attempt in range(1, MAX_TRIES + 1):
+            try:
+                ts = self._ts_iso()
+                if method == "GET":
+                    body_or_query = ""
+                    if params:
+                        from urllib.parse import urlencode
+                        qs = "?" + urlencode(params, doseq=True)
+                        body_or_query = qs
+                    sign = self._sign(ts, method, path + body_or_query, "")
+                    headers = {
+                        "OK-ACCESS-KEY": self.api_key,
+                        "OK-ACCESS-SIGN": sign,
+                        "OK-ACCESS-TIMESTAMP": ts,
+                        "OK-ACCESS-PASSPHRASE": self.passphrase,
+                    }
+                    if OKX_SIMULATED == "1":
+                        headers["x-simulated-trading"] = "1"
+                    r = await self._client.get(path, headers=headers, params=params or {})
+                else:
+                    payload = json.dumps(body or {}, separators=(",", ":"), ensure_ascii=False)
+                    sign = self._sign(ts, method, path, payload)
+                    headers = {
+                        "OK-ACCESS-KEY": self.api_key,
+                        "OK-ACCESS-SIGN": sign,
+                        "OK-ACCESS-TIMESTAMP": ts,
+                        "OK-ACCESS-PASSPHRASE": self.passphrase,
+                        "Content-Type": "application/json",
+                    }
+                    if OKX_SIMULATED == "1":
+                        headers["x-simulated-trading"] = "1"
+                    r = await self._client.post(path, headers=headers, content=payload)
 
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") != "0":
-            # поднимем точный ответ OKX (для отладки)
-            raise RuntimeError(f"OKX error: {data.get('code')} {data.get('msg')} | {data}")
-        return data
+                if r.status_code in RETRYABLE_STATUS:
+                    raise HTTPStatusError("retryable status", request=r.request, response=r)
+                r.raise_for_status()
+                data = r.json()
+                if data.get("code") != "0":
+                    # функциональные ошибки биржи не ретраим
+                    raise RuntimeError(f"OKX error: {data.get('code')} {data.get('msg')} | {data}")
+                return data
+
+            except (ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError, HTTPStatusError) as e:
+                last_exc = e
+                if attempt >= MAX_TRIES:
+                    raise
+                await asyncio.sleep(_backoff_sleep(attempt))
+        if last_exc:
+            raise last_exc
+
 
     async def _post_private(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         return await self._request_private("POST", path, body=body)
@@ -154,22 +214,19 @@ class OKXAsyncClient:
                 return await self._post_private("/api/v5/trade/order", b2)
             raise
 
-    # ------------------ публичные эндпоинты ------------------
+    # --- Обнови публичные методы на общий ретрайный _get_public ---
     async def _get_ticker(self, inst_id: str) -> Dict[str, Any]:
-        r = await self._client.get("/api/v5/market/ticker", params={"instId": inst_id})
-        r.raise_for_status()
-        data = r.json()
+        data = await self._get_public("/api/v5/market/ticker", {"instId": inst_id})
         if data.get("code") != "0" or not data.get("data"):
             raise RuntimeError(f"Ticker error: {data}")
         return data["data"][0]
 
     async def _get_instrument(self, inst_id: str) -> Dict[str, Any]:
-        r = await self._client.get("/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id})
-        r.raise_for_status()
-        data = r.json()
+        data = await self._get_public("/api/v5/public/instruments", {"instType": "SWAP", "instId": inst_id})
         if data.get("code") != "0" or not data.get("data"):
             raise RuntimeError(f"Instrument error: {data}")
         return data["data"][0]
+
 
     # ------------------ аккаунт: posMode (net vs hedge) ------------------
     async def _get_account_config(self) -> Dict[str, Any]:
@@ -379,92 +436,154 @@ class OKXAsyncClient:
         return await self._post_order_with_retry(body)
 
     # ------------------ ВНЕШНЯЯ ПУБЛИЧНАЯ ФУНКЦИЯ ПОЛНОГО ЗАКРЫТИЯ ------------------
-    async def close_all_positions(
+        # -------- lot/minSz для квантования sz --------
+    async def _get_lot_filters(self, inst_id: str) -> tuple[Decimal, Decimal]:
+        ins = await self._get_instrument(inst_id)
+        lot_sz = _d(ins.get("lotSz", "1") or "1")
+        min_sz = _d(ins.get("minSz", "1") or "1")
+        return lot_sz, min_sz
+
+    # -------- закрытие ВЕСЬ ЛОНГ --------
+    async def close_long_all(
         self,
-        symbol: str,                       # 'BIOUSDT' или 'BIO-USDT-SWAP'
+        symbol: str,
         *,
-        cl_ord_id_prefix: str = "cALL",    # префикс для clOrdId
+        cl_ord_id_prefix: str = "cL",
         tag: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Optional[Dict[str, Any]]:
         """
-        Закрывает ПОЛНОСТЬЮ ЛЮБУЮ открытую позицию по symbol.
-        - В net_mode: одна позиция -> закрывается целиком.
-        - В hedge(long_short_mode): если открыты обе стороны (long и short) — закроет обе.
-        Алгоритм:
-          1) пытаемся /api/v5/trade/close-position (официальный полный close),
-          2) при ошибке делаем рыночный reduceOnly ордер на полный объём.
-        Вернёт список результатов (по каждой закрытой стороне).
-        Если позиции нет — поднимет RuntimeError с понятным текстом (чтобы избежать 51169).
+        Закрывает ВЕСЬ лонг по symbol (если есть). Возвращает ответ OKX или None.
         """
         inst_id = to_okx_inst_id(symbol)
-        pos_mode, long_pos, short_pos = await self._find_position(inst_id)
+        pos_mode, long_pos, _ = await self._find_position(inst_id)
+        if not long_pos:
+            return None
 
-        if not long_pos and not short_pos:
-            return {'long_closed': None, "short_closed": None}
+        mgn_mode = (long_pos.get("mgnMode") or "").lower() or "cross"
+        pos_side = None
+        if pos_mode == "long_short_mode":
+            pos_side = "long"
 
-        results: List[Dict[str, Any]] = []
+        # 1) официальный полный close
+        body = {"instId": inst_id, "mgnMode": mgn_mode}
+        if pos_side:
+            body["posSide"] = pos_side
+        try:
+            return await self._post_private("/api/v5/trade/close-position", body)
+        except Exception:
+            # 2) фолбэк: рыночный reduceOnly SELL на весь объём
+            qty_abs = _d(long_pos.get("pos", "0")).copy_abs()
+            if qty_abs <= 0:
+                return None
 
-        # внутренняя функция закрытия одной стороны
-        async def _close_one(position: Dict[str, Any], close_short: bool) -> Dict[str, Any]:
-            mgn_mode = (position.get("mgnMode") or "").lower()
-            if mgn_mode not in ("cross", "isolated"):
-                mgn_mode = "cross"
-            # posSide для hedge
-            pos_side = None
-            if pos_mode == "long_short_mode":
-                pos_side = "short" if close_short else "long"
+            lot_sz, min_sz = await self._get_lot_filters(inst_id)
+            # квантуем под шаг/минимум
+            if lot_sz > 0:
+                qty_abs = _round_step(qty_abs, lot_sz)
+            if qty_abs < min_sz:
+                qty_abs = min_sz
 
-            # 1) официальный полный close
-            body = {"instId": inst_id, "mgnMode": mgn_mode}
+            order = {
+                "instId": inst_id,
+                "tdMode": mgn_mode,
+                "side": "sell",
+                "ordType": "market",
+                "sz": _fmt_decimal(qty_abs),
+                "reduceOnly": "true",
+                "clOrdId": _safe_clordid(cl_ord_id_prefix),
+            }
+            if tag:
+                order["tag"] = tag
             if pos_side:
-                body["posSide"] = pos_side
-            try:
-                r = await self._post_private("/api/v5/trade/close-position", body)
-                results.append(r)
-                return r
-            except Exception:
-                # 2) фолбэк — reduceOnly рыночный ордер на весь объём
-                contracts_abs = _d(position.get("pos", "0")).copy_abs()
-                if contracts_abs <= 0:
-                    raise RuntimeError(f"Nothing to close for {inst_id}")
+                order["posSide"] = "long"   # закрываем лонг продажей в hedge-режиме
+            return await self._post_order_with_retry(order)
 
-                sz_str = _fmt_decimal(contracts_abs)
-                if close_short:
-                    # закрываем шорт: buy reduceOnly
-                    r = await self.open_long(
-                        inst_id=inst_id,
-                        sz=sz_str,
-                        ord_type="market",
-                        px=None,
-                        td_mode=mgn_mode,
-                        pos_side=pos_side,
-                        reduce_only=True,
-                        cl_ord_id=_safe_clordid(cl_ord_id_prefix + "S"),
-                        tag=tag,
-                    )
-                else:
-                    # закрываем лонг: sell reduceOnly
-                    r = await self.open_short(
-                        inst_id=inst_id,
-                        sz=sz_str,
-                        ord_type="market",
-                        px=None,
-                        td_mode=mgn_mode,
-                        pos_side=pos_side,
-                        reduce_only=True,
-                        cl_ord_id=_safe_clordid(cl_ord_id_prefix + "L"),
-                        tag=tag,
-                    )
-                results.append(r)
-                return r
+    # -------- закрытие ВЕСЬ ШОРТ --------
+    async def close_short_all(
+        self,
+        symbol: str,
+        *,
+        cl_ord_id_prefix: str = "cS",
+        tag: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Закрывает ВЕСЬ шорт по symbol (если есть). Возвращает ответ OKX или None.
+        """
+        inst_id = to_okx_inst_id(symbol)
+        pos_mode, _, short_pos = await self._find_position(inst_id)
+        if not short_pos:
+            return None
 
-        # в net_mode одновременно будет только одна сторона
-        if long_pos:
-            await _close_one(long_pos, close_short=False)
-        if short_pos:
-            await _close_one(short_pos, close_short=True)
+        mgn_mode = (short_pos.get("mgnMode") or "").lower() or "cross"
+        pos_side = None
+        if pos_mode == "long_short_mode":
+            pos_side = "short"
 
-        return results
+        # 1) официальный полный close
+        body = {"instId": inst_id, "mgnMode": mgn_mode}
+        if pos_side:
+            body["posSide"] = pos_side
+        try:
+            return await self._post_private("/api/v5/trade/close-position", body)
+        except Exception:
+            # 2) фолбэк: рыночный reduceOnly BUY на весь объём
+            qty_abs = _d(short_pos.get("pos", "0")).copy_abs()
+            if qty_abs <= 0:
+                return None
+
+            lot_sz, min_sz = await self._get_lot_filters(inst_id)
+            if lot_sz > 0:
+                qty_abs = _round_step(qty_abs, lot_sz)
+            if qty_abs < min_sz:
+                qty_abs = min_sz
+
+            order = {
+                "instId": inst_id,
+                "tdMode": mgn_mode,
+                "side": "buy",
+                "ordType": "market",
+                "sz": _fmt_decimal(qty_abs),
+                "reduceOnly": "true",
+                "clOrdId": _safe_clordid(cl_ord_id_prefix),
+            }
+            if tag:
+                order["tag"] = tag
+            if pos_side:
+                order["posSide"] = "short"  # закрываем шорт покупкой в hedge-режиме
+            return await self._post_order_with_retry(order)
+
+    # -------- «bybit-style» обёртка: закрыть обе стороны --------
+    async def close_all_positions(
+        self,
+        symbol: str,
+        *,
+        cl_ord_id_prefix: str = "cALL",
+        tag: Optional[str] = None,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Закрывает обе стороны по инструменту (если есть).
+        Возвращает {"long_closed": <resp|None>, "short_closed": <resp|None>}.
+        """
+        inst_id = to_okx_inst_id(symbol)
+        # быстрый просмотр: если вообще ничего нет — сразу вернём оба None
+        _, long_pos, short_pos = await self._find_position(inst_id)
+        if not long_pos and not short_pos:
+            return {"long_closed": None, "short_closed": None}
+
+        res_long = await self.close_long_all(
+            symbol,
+            cl_ord_id_prefix=(cl_ord_id_prefix + "L"),
+            tag=tag,
+        ) if long_pos else None
+
+        res_short = await self.close_short_all(
+            symbol,
+            cl_ord_id_prefix=(cl_ord_id_prefix + "S"),
+            tag=tag,
+        ) if short_pos else None
+
+        return {"long_closed": res_long, "short_closed": res_short}
+
 
     # ------------------ открытие по USDT ------------------
     async def open_long_usdt(
@@ -636,21 +755,21 @@ class OKXAsyncClient:
 async def main():
     client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
     try:
-        symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
+        symbol = "SIGNUSDT"  # или 'BIO-USDT-SWAP'
 
         # открыть сделки (пример):
-        # r = await client.open_long_usdt(symbol, 10, leverage=5)
+        # r = await client.open_long_usdt(symbol, 50, leverage=1)
         # print("OPEN LONG:", r)
-        # r = await client.open_short_usdt(symbol, 10, leverage=5)
-        # print("OPEN SHORT:", r)
+        r = await client.open_short_usdt(symbol, 50, leverage=1)
+        print("OPEN SHORT:", r)
 
         # pos = await client.get_open_positions()
         # print("OPEN POSITIONS:", pos)
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
-        r = await client.close_all_positions(symbol)
-        print("CLOSE ALL SIDES:", r)
+        # r = await client.close_all_positions(symbol)
+        # print("CLOSE ALL SIDES:", r)
 
     finally:
         await client.close()

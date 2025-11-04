@@ -169,12 +169,14 @@ class BybitAsyncClient:
         usdt_amount: float | str,
         *,
         side: Literal["buy","sell"],
-        category: Literal["linear","inverse"]="linear",
+        category: Literal["linear","inverse"] = "linear",
+        leverage: float | str = 1,
     ) -> str:
         """
-        Конвертирует USDT → qty с учётом цены, contractSize, minOrderQty, qtyStep.
+        Конвертирует USDT → qty (КОНТРАКТЫ) с учётом цены, contractSize, minOrderQty, qtyStep и плеча.
         Если итоговое qty < minOrderQty — возвращает minOrderQty.
         """
+        # 1) Цена
         t = await self._get_ticker(symbol, category)
         px_str = t.get("ask1Price") if side == "buy" else t.get("bid1Price")
         if not px_str or _d(px_str) == 0:
@@ -183,23 +185,37 @@ class BybitAsyncClient:
         if price <= 0:
             raise RuntimeError(f"Bad price for {symbol}: {price}")
 
+        # 2) Спека инструмента
         ins = await self._get_instrument(symbol, category)
         lot = ins.get("lotSizeFilter", {}) or {}
-        min_qty      = _d(lot.get("minOrderQty", "0"))
-        qty_step     = _d(lot.get("qtyStep", "0"))
-        contract_sz  = _d(ins.get("contractSize", "1"))
+        min_qty     = _d(lot.get("minOrderQty", "0"))
+        qty_step    = _d(lot.get("qtyStep", "0"))
+        contract_sz = _d(ins.get("contractSize", "1"))
 
+        # 3) Нотация (с плечом!)
         usdt = _d(usdt_amount)
-        raw_coin_qty     = (usdt / price) if price > 0 else _d(0)
-        raw_contract_qty = raw_coin_qty / (contract_sz if contract_sz > 0 else _d(1))
+        lev  = _d(leverage)
+        notional = usdt * lev  # <<< ВАЖНО: учитываем плечо
 
-        qty = raw_contract_qty
+        # 4) Пересчёт в КОНТРАКТЫ
+            # contractSize в coin/contract
+        coin_qty      = notional / price
+        raw_contracts = coin_qty / (contract_sz if contract_sz > 0 else _d(1))
+
+        # 5) Приведение к шагу/минимуму
+        qty = raw_contracts
         if qty_step > 0:
             qty = _round_step(qty, qty_step)
         if qty < min_qty:
             qty = min_qty
 
+        # 6) Возвращаем со строго нужным числом знаков (по шагу)
+        if qty_step > 0:
+            # форматируем по количеству десятичных знаков шага
+            scale = -qty_step.as_tuple().exponent if qty_step != 0 else 0
+            return f"{qty:.{max(scale,0)}f}"
         return _trim_decimals(qty)
+
 
     # ------------ РАБОТА С ПЛЕЧОМ ------------
     async def set_leverage(
@@ -339,7 +355,7 @@ class BybitAsyncClient:
             return _d(0), 0, want_side
         return best
 
-    # ------------ ЗАКРЫТИЕ ПОЗИЦИЙ (ВСЕЙ) ------------
+   # ------------ ЗАКРЫТИЕ ПОЗИЦИЙ (ВСЕЙ) ------------
     async def close_long_all(
         self,
         symbol: str,
@@ -348,22 +364,9 @@ class BybitAsyncClient:
         position_idx: Optional[int] = None,
         order_link_id: Optional[str]=None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Закрывает весь ЛОНГ по символу Market-ордером reduceOnly.
-        Если лонга нет — вернёт None.
-        """
         size, pos_idx_found, _ = await self._find_side_position(symbol, want_side="buy", category=category)
         if size <= 0:
             return None
-
-        # учтём квантование qty по шагу
-        min_qty, qty_step = await self._get_instrument_lot_filters(symbol, category)
-        qty = size
-        if qty_step > 0:
-            qty = _round_step(qty, qty_step)
-        if qty < min_qty:
-            # Если брокер внезапно вернул size < min_qty, на всякий случай поставим min_qty
-            qty = min_qty
 
         if order_link_id is None:
             order_link_id = f"close_long_all_{uuid.uuid4().hex[:10]}"
@@ -371,13 +374,19 @@ class BybitAsyncClient:
         body: Dict[str, Any] = {
             "category": category,
             "symbol": symbol,
-            "side": "Sell",                 # встречная сторона
+            "side": "Sell",
             "orderType": "Market",
-            "qty": _trim_decimals(qty),
+            # ключевой момент: qty="0" + reduceOnly + closeOnTrigger
+            "qty": "0",
             "reduceOnly": True,
+            "closeOnTrigger": True,
+            # Market-ордер всё равно будет IOC, это ок
             "timeInForce": "IOC",
             "orderLinkId": order_link_id,
             "positionIdx": position_idx if position_idx is not None else pos_idx_found,
+            # необязательно, но помогает избежать частичного из-за price-protection:
+            "slippageToleranceType": "Percent",
+            "slippageTolerance": "5"  # до 5% коридор; при желании сделайте параметром
         }
         return await self._post_private("/v5/order/create", body)
 
@@ -389,20 +398,9 @@ class BybitAsyncClient:
         position_idx: Optional[int] = None,
         order_link_id: Optional[str]=None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Закрывает весь ШОРТ по символу Market-ордером reduceOnly.
-        Если шорта нет — вернёт None.
-        """
         size, pos_idx_found, _ = await self._find_side_position(symbol, want_side="sell", category=category)
         if size <= 0:
             return None
-
-        min_qty, qty_step = await self._get_instrument_lot_filters(symbol, category)
-        qty = size
-        if qty_step > 0:
-            qty = _round_step(qty, qty_step)
-        if qty < min_qty:
-            qty = min_qty
 
         if order_link_id is None:
             order_link_id = f"close_short_all_{uuid.uuid4().hex[:10]}"
@@ -410,15 +408,19 @@ class BybitAsyncClient:
         body: Dict[str, Any] = {
             "category": category,
             "symbol": symbol,
-            "side": "Buy",                  # встречная сторона
+            "side": "Buy",
             "orderType": "Market",
-            "qty": _trim_decimals(qty),
+            "qty": "0",
             "reduceOnly": True,
+            "closeOnTrigger": True,
             "timeInForce": "IOC",
             "orderLinkId": order_link_id,
             "positionIdx": position_idx if position_idx is not None else pos_idx_found,
+            "slippageToleranceType": "Percent",
+            "slippageTolerance": "5",
         }
         return await self._post_private("/v5/order/create", body)
+
 
     async def close_all_positions(
         self,
