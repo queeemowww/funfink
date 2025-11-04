@@ -130,7 +130,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.1
+        self.demanded_funding_rev=0.4
         self.c=Calc()
 
 # ===== Утилиты =====
