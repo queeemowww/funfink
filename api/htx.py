@@ -10,7 +10,7 @@ import urllib.parse
 from typing import Optional, Literal, Dict, Any, List
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR
 from datetime import datetime, timezone
-
+import certifi
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
@@ -67,7 +67,7 @@ class HTXAsyncClient:
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
         self.base_url   = base_url.rstrip("/")
-        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=certifi.where())
         self._retry_lev = int(default_retry_leverage)
 
     # --- context ---
@@ -722,8 +722,7 @@ async def _example():
 
         # # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         # print("CLOSE ALL:", await htx.close_all_positions(symbol))
-        # print(float(await htx.get_usdt_balance()))
-        print(str({"okx": 0,"htx": 0}))
+        print(float(await htx.get_usdt_balance()))
 
 
 if __name__ == "__main__":
