@@ -10,14 +10,14 @@ import urllib.parse
 from typing import Optional, Literal, Dict, Any, List
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR
 from datetime import datetime, timezone
-
+import certifi
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
 HTX_API_KEY    = os.getenv("HTX_API_KEY", "")
 HTX_API_SECRET = os.getenv("HTX_API_SECRET", "")
-
+CUSTOM_BUNDLE = "/etc/ssl/certs/custom-certifi-plus-hbdm.pem"
 # ---------- numeric utils ----------
 def _d(x) -> Decimal:
     return Decimal(str(x))
@@ -67,7 +67,12 @@ class HTXAsyncClient:
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
         self.base_url   = base_url.rstrip("/")
-        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            verify=CUSTOM_BUNDLE if os.path.exists(CUSTOM_BUNDLE) else certifi.where(),
+            trust_env=True,
+        )
         self._retry_lev = int(default_retry_leverage)
 
     # --- context ---

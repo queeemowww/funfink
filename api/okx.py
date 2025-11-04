@@ -818,7 +818,7 @@ async def main():
         # r = await client.close_all_positions(symbol)
         # print("CLOSE ALL SIDES:", r)
 
-        # print(float(await client.get_usdt_balance()))
+        print(float(await client.get_usdt_balance()))
 
     finally:
         await client.close()
