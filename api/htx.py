@@ -11,6 +11,7 @@ from typing import Optional, Literal, Dict, Any, List
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR
 from datetime import datetime, timezone
 import certifi
+import ssl
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
@@ -53,21 +54,34 @@ class HTXAsyncClient:
       а не общее "volume".  :contentReference[oaicite:4]{index=4}
     """
 
-    def __init__(
-        self,
-        api_key: str,
-        api_secret: str,
-        *,
-        base_url: str = "https://api.hbdm.com",
-        timeout: float = 15.0,
-        default_retry_leverage: int = 5,
-    ):
+    def __init__(self, api_key: str, api_secret: str, *,
+                 base_url: str = "https://api.hbdm.com",
+                 timeout: float = 15.0,
+                 default_retry_leverage: int = 5,
+                 verify: Optional[str | bool] = None):
         if not api_key or not api_secret:
             raise ValueError("HTX_API_KEY / HTX_API_SECRET не заданы")
+        
+        if verify is None:
+            # создаём SSLContext с certifi
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        elif verify is False:
+            # только для отладки! отключает проверку сертификатов
+            ssl_ctx = ssl._create_unverified_context()
+        else:
+            # путь к кастомному CA-бандлу
+            ssl_ctx = ssl.create_default_context(cafile=str(verify))
+
+        self.base_url   = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            verify=ssl_ctx,   # <<< ключевая строка
+            http2=True,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
-        self.base_url   = base_url.rstrip("/")
-        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=certifi.where())
         self._retry_lev = int(default_retry_leverage)
 
     # --- context ---
