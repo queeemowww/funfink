@@ -1,6 +1,13 @@
 # htx_async_futures_mainnet.py
 from __future__ import annotations
 
+try:
+    import truststore
+    truststore.inject_into_ssl()  # заставляет ssl использовать системные корни ОС
+    _TRUSTSTORE = True
+except Exception:
+    _TRUSTSTORE = False
+import os, ssl, httpx
 import os
 import hmac
 import base64
@@ -21,6 +28,41 @@ CUSTOM_BUNDLE = "/etc/ssl/certs/custom-certifi-plus-hbdm.pem"
 # ---------- numeric utils ----------
 def _d(x) -> Decimal:
     return Decimal(str(x))
+
+def _make_tls_client(base_url: str, timeout: float) -> httpx.AsyncClient:
+        # 0) небезопасный режим по явному флагу
+        if os.getenv("HTX_INSECURE_TLS", "0") == "1":
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return httpx.AsyncClient(base_url=base_url, timeout=timeout, verify=ctx, trust_env=True)
+
+        # 1) Путь через truststore (системный стор ОС)
+        try:
+            import truststore  # noqa
+            # если сюда дошли — truststore.inject_into_ssl() уже выполнен выше
+            return httpx.AsyncClient(base_url=base_url, timeout=timeout, trust_env=True)
+        except Exception:
+            pass
+
+        # 2) Явно системный CA-файл (Debian/Ubuntu)
+        sys_ca = "/etc/ssl/certs/ca-certificates.crt"
+        if os.path.exists(sys_ca):
+            try:
+                return httpx.AsyncClient(base_url=base_url, timeout=timeout, verify=sys_ca, trust_env=True)
+            except Exception:
+                pass
+
+        # 3) Certifi как запасной вариант
+        try:
+            import certifi
+            return httpx.AsyncClient(base_url=base_url, timeout=timeout, verify=certifi.where(), trust_env=True)
+        except Exception:
+            # 4) последний шанс — insecure (только если явно разрешено)
+            raise RuntimeError(
+                "TLS verification failed with truststore/system/certifi. "
+                "Set HTX_INSECURE_TLS=1 temporarily to bypass, but FIX CA store!"
+            )
 
 def _round_step(value: Decimal, step: Decimal) -> Decimal:
     if step == 0:
@@ -67,12 +109,8 @@ class HTXAsyncClient:
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
         self.base_url   = base_url.rstrip("/")
-        self.client = httpx.AsyncClient(
-            base_url="https://api.hbdm.com",
-            timeout=15,
-            verify="/etc/ssl/certs/custom-certifi-plus-hbdm.pem",
-            trust_env=True
-        )
+        self._client = _make_tls_client(self.base_url, timeout)
+
         self._retry_lev = int(default_retry_leverage)
 
     # --- context ---
