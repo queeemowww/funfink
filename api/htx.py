@@ -722,7 +722,8 @@ async def _example():
 
         # # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         # print("CLOSE ALL:", await htx.close_all_positions(symbol))
-        print(float(await htx.get_usdt_balance()))
+        # print(float(await htx.get_usdt_balance()))
+        print(str({"okx": 0,"htx": 0}))
 
 
 if __name__ == "__main__":

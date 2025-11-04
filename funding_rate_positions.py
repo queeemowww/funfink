@@ -106,7 +106,15 @@ class Logic():
      # загружаем переменные из .env
 
     #Подставь свои директории
-        self.balance = 0
+        self.balance = {
+            "okx": 0,
+            "bitget": 0,
+            "bybit": 0,
+            "gate": 0,
+            "htx": 0,
+            "kucoin": 0
+        }
+        self.all_balance = 0
         self.df_pairs_dir='data/symbols_cleared.csv'
         self.out_csv_dir="temp_data/funding_rates" # куда сохраняем
         self.logs_path ='data/logs.csv'
@@ -116,8 +124,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=5
-        self.check_price_finish=31
-        self.minutes_for_start_parse=33
+        self.check_price_finish=44
+        self.minutes_for_start_parse=45
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -856,11 +864,12 @@ class Logic():
             text=[]
 
             for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
-                self.balance += float(await self.c.dict[ex].get_usdt_balance())
+                self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
+                self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
 
             for i in range(5):
                 if i == 0:
-                    text.append(f"*БАЛАНС: {round(self.balance, 2)} USDT*\n\n 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n{analyze(analytical_df['symbol'].iloc[i])}")
+                    text.append(f"*БАЛАНС: {round(self.all_balance, 2)} USDT*\n{str(self.balance)}\n 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n{analyze(analytical_df['symbol'].iloc[i])}")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
                 max_time = (analytical_df['max_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
