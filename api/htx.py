@@ -715,14 +715,14 @@ class HTXAsyncClient:
 async def _example():
     symbol = "BIOUSDT"
     async with HTXAsyncClient(HTX_API_KEY, HTX_API_SECRET) as htx:
-        print("OPEN LONG:", await htx.open_long_usdt(symbol, 10, leverage=5))
+        # print("OPEN LONG:", await htx.open_long_usdt(symbol, 10, leverage=5))
         # print("OPEN SHORT:", await htx.open_short_usdt(symbol, 10, leverage=5))
 
         # print("POSITIONS:", await htx.get_open_positions(symbol))
 
         # # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         # print("CLOSE ALL:", await htx.close_all_positions(symbol))
-        # print(float(await htx.get_usdt_balance()))
+        print(float(await htx.get_usdt_balance()))
 
 
 if __name__ == "__main__":
