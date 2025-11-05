@@ -862,6 +862,7 @@ class Logic():
                     return("Сегодня без мема(")
             analytical_df=result_sorted.head(5)
             text=[]
+            self.all_balance = 0
 
             for ex in ['bybit', 'bitget', 'okx', 'gate', 'kucoin_futures']:
                 self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
