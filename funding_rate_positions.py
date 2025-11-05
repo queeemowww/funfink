@@ -718,7 +718,7 @@ class Logic():
             print("Saved:", out_csv)
             df_funding=df
             df_funding = df_funding[df_funding['exchange'] != 'mexc']
-            df_funding = df_funding[df_funding['exchange'] != 'htx']
+            # df_funding = df_funding[df_funding['exchange'] != 'htx']
             df_funding=df_funding.dropna(subset=['funding_rate'])
             df_funding['symbol_u']=df_funding['symbol']
             df_funding['symbol']=df_funding['symbol_n']
@@ -868,7 +868,6 @@ class Logic():
                 self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
                 self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
             
-            self.all_balance = 0
             for i in range(5):
                 if i == 0:
                     text.append(f"""💰БАЛАНС: {round(self.all_balance, 2)} USDT\n
@@ -877,7 +876,7 @@ class Logic():
 ⚫OKX: {self.balance.get('okx'):.2f}\n
 ⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
 🟢GATE: {self.balance.get('gate'):.2f}\n\n 
-                    🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n{analyze(analytical_df['symbol'].iloc[i])}""")
+🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n{analyze(analytical_df['symbol'].iloc[i])}""")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
                 max_time = (analytical_df['max_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
@@ -898,7 +897,7 @@ class Logic():
 
             df_funding11["symbol_n"] = df_funding11["symbol"].apply(self.normalize_symbol)
             df_funding11=df_funding11[df_funding11['exchange']!='mexc']
-            df_funding11=df_funding11[df_funding11['exchange']!='htx']
+            # df_funding11=df_funding11[df_funding11['exchange']!='htx']
             df_funding11=df_funding11.dropna(subset=["funding_rate"])
             df_funding1=df_funding11[['timestamp_utc','exchange','symbol','symbol_n','funding_rate','funding_time']]
             df_funding1['funding_rate']=df_funding1['funding_rate']*100
@@ -909,8 +908,8 @@ class Logic():
             df_result=result_sorted.copy()
             df_result=df_result[df_result['min_exchange']!='mexc']
             df_result=df_result[df_result['max_exchange']!='mexc']
-            df_result=df_result[df_result['min_exchange']!='htx']
-            df_result=df_result[df_result['max_exchange']!='htx']
+            # df_result=df_result[df_result['min_exchange']!='htx']
+            # df_result=df_result[df_result['max_exchange']!='htx']
             df_result['funding_diff_metric']=df_result['funding_diff_metric']*100
             df_result['max_rate']=df_result['max_rate']*100
             df_result['min_rate']=df_result['min_rate']*100
@@ -1142,9 +1141,6 @@ class Logic():
                         logs_df.to_csv(self.logs_path, index=False)
                             
                 i+=1
-                    
-            
-
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
