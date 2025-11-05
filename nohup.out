@@ -1,0 +1,139 @@
+  
+ ⏸ Сейчас 02:38 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:39 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:40 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:41 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:42 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:43 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:44 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:45 — вне окна (ждём 5-ю минуту)
+[02:45:15] at_50: стартую
+⏸ Сейчас 02:46 — вне окна (ждём 5-ю минуту)
+Saved: temp_data/funding_rates20251105_0246.csv
+       symbol  min_rate  ... funding_diff_metric         metric_reason
+34  SIGN/USDT -0.007787  ...            0.002996  B_in_next→use_rate_b
+24     M/USDT  0.000721  ...            0.000987  B_in_next→use_rate_b
+0     0G/USDT -0.003463  ...            0.000823      same_time→spread
+ 31  PRCL/USDT -0.000408  ...            0.000420      same_time→spread
+1    AIA/USDT  0.000127  ...            0.000405  B_in_next→use_rate_b
+
+[5 rows x 9 columns]
+Empty DataFrame
+Columns: [ts_utc, symbol, long_exchange, short_exchange, long_funding, short_fu>
+Index: []
+Код занял времени 97.96 секунд
+[OK] Удалён: result_sorted20251104_2246.csv
+[OK] Удалён: funding_rates20251104_2346.csv
+⏸ Сейчас 02:47 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:48 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:49 — вне окна (ждём 5-ю минуту)
+  ⏸ Сейчас 02:50 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:51 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:52 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:53 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:54 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:55 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:56 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:57 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:58 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 02:59 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:00 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:01 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:02 — вне окна (ждём 5-ю минуту)
+/root/funfink/funding_rate_positions.py:904: SettingWithCopyWarning:
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+  See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/sta>
+  df_funding1['funding_rate']=df_funding1['funding_rate']*100
+/root/funfink/funding_rate_positions.py:905: SettingWithCopyWarning:
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/sta>
+  df_funding1['funding_rate_abs']=abs(df_funding1['funding_rate'])
+⏸ Сейчас 03:03 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:04 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:05 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:06 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:07 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:08 — вне окна (ждём 5-ю минуту)
+  ⏸ Сейчас 03:09 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:10 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:11 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:12 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:13 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:14 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:15 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:16 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:17 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:18 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:19 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:20 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:21 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:22 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:23 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:24 — вне окна (ждём 5-ю минуту)
+  ⏸ Сейчас 03:25 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:26 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:27 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:28 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:29 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:30 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:31 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:32 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:33 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:34 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:35 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:36 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:37 — вне окна (ждём 5-ю минуту)
+  ⏸ Сейчас 03:38 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:39 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:40 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:41 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:42 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:43 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:44 — вне окна (ждём 5-ю минуту)
+⏸ Сейчас 03:45 — вне окна (ждём 5-ю минуту)
+[03:45:15] at_50: стартую
+⏸ Сейчас 03:46 — вне окна (ждём 5-ю минуту)
+Saved: temp_data/funding_rates20251105_0346.csv
+        symbol  min_rate  ... funding_diff_metric         metric_reason
+290  SIGN/USDT -0.010117  ...            0.007842      same_time→spread
+337    UB/USDT  0.000050  ...            0.001928      same_time→spread
+63    BIO/USDT -0.002098  ...            0.001550      same_time→spread
+63    BIO/USDT -0.002098  ...            0.001550      same_time→spread
+376   ZEC/USDT -0.002935  ...            0.001387  A_in_next→use_rate_a
+8       4/USDT  0.000171  ...            0.001289      same_time→spread
+
+[5 rows x 9 columns]
+Empty DataFrame
+Columns: [ts_utc, symbol, long_exchange, short_exchange, long_funding, short_fu>
+Index: []
+SIGN/USDT
+Traceback (most recent call last):
+  File "/root/funfink/funding_rate_positions.py", line 1234, in <module>
+    asyncio.run(Logic().main())
+  File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 687, in run_until_com>
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/root/funfink/funding_rate_positions.py", line 1231, in main
+    await asyncio.gather(self.run_window(), self.run_at_50())
+  File "/root/funfink/funding_rate_positions.py", line 1116, in run_at_50
+    await asyncio.gather(
+  File "/root/funfink/funding_rate_positions.py", line 96, in open_order
+    await client.open_short_usdt(symbol = symbol, usdt_amount = self.size, leve>
+  File "/root/funfink/api/bybit.py", line 471, in open_short_usdt
+    return await self.open_short(
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/funfink/api/bybit.py", line 310, in open_short
+    return await self._post_private("/v5/order/create", body)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/funfink/api/bybit.py", line 127, in _post_private
+    raise RuntimeError(f"Bybit error: {self._err(data)}")
+RuntimeError: Bybit error: 110007 - ab not enough for new order | {}

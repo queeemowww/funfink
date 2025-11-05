@@ -114,7 +114,6 @@ class Logic():
             "htx": 0,
             "kucoin_futures": 0
         }
-        self.all_balance = 0
         self.df_pairs_dir='data/symbols_cleared.csv'
         self.out_csv_dir="temp_data/funding_rates" # куда сохраняем
         self.logs_path ='data/logs.csv'
@@ -868,7 +867,7 @@ class Logic():
                 self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
                 self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
             
-
+            self.all_balance = 0
             for i in range(5):
                 if i == 0:
                     text.append(f"""💰БАЛАНС: {round(self.all_balance, 2)} USDT\n
