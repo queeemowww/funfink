@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 import numpy as np
 import re
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,8 +21,9 @@ from api.gate import GateAsyncFuturesClient
 from api.htx import HTXAsyncClient
 from api.kucoin import KucoinAsyncFuturesClient
 import warnings
+import re
 warnings.filterwarnings("ignore", category=UserWarning)
-
+from pairs_parse import Parsing
 import os
 from pathlib import Path
 import sys
@@ -58,9 +60,10 @@ KUCOIN_API_KEY = os.getenv('KUCOIN_API_KEY')
 KUCOIN_API_SECRET = os.getenv('KUCOIN_API_SECRET')
 KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 
+
+
 class Calc():
     def __init__(self):
-        self.size = 50
         self.leverage = 1
         self.dict = {
             "bitget": BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE),
@@ -78,27 +81,77 @@ class Calc():
         return 
     
 
-    async def calc_pnl(self):
-        "РАСЧЕТ СУММАРНОГО ПРОФИТА КАЖДУЮ СЕКУНДУ"
+    async def calc_pnl(self, symbol, long_ex, short_ex):
+        if not len(re.findall(".+USDT", symbol)):
+            symbol = symbol+'/USDT'
+        symbol=symbol.replace('/','')
+        long_pos = await self.dict[long_ex].get_open_positions(symbol = symbol)
+        short_pos = await self.dict[short_ex].get_open_positions(symbol = symbol)
 
-        return 
+        return float(long_pos['pnl']) / float(long_pos['usdt']) + float(short_pos['pnl']) / float(short_pos['usdt'])
+    
     async def get_open_position(self,symbol,exchange):
+        if not len(re.findall(".+USDT", symbol)):
+            symbol = symbol+'/USDT'
+        symbol=symbol.replace('/','')
+
         client=self.dict[exchange]
         return await client.get_open_positions(symbol = symbol)
 
 
-    async def open_order(self, direction, symbol, exchange):
+    async def get_qty(self, long_ex, short_ex, sym):
+        long_ex_size = math.floor(int(float(await self.dict[long_ex].get_usdt_balance())))
+        short_ex_size = math.floor(int(float(await self.dict[short_ex].get_usdt_balance())))
+        self.size = min(long_ex_size, short_ex_size) * 0.9
+        newsym = sym
+        if not len(re.findall(".+USDT", newsym)):
+            newsym = newsym+'/USDT'
+        newsym=newsym.replace('/','')
+
+        qty_long = await self.dict[long_ex].usdt_to_qty(symbol=newsym, usdt_amount=self.size, side="buy")
+        qty_short = await self.dict[short_ex].usdt_to_qty(symbol=newsym, usdt_amount=self.size, side="sell") 
+        qty = min(float(qty_long), float(qty_short))
+        try:
+            contract_size_long = self.dict[long_ex].contract_size
+            if qty % contract_size_long:
+                qty = qty // contract_size_long * contract_size_long
+            if qty < contract_size_long:
+                pass
+        except:
+            pass
+        try:
+            contract_size_short = self.dict[short_ex].contract_size
+            if qty % contract_size_short:
+                qty = qty // contract_size_short * contract_size_short
+            if qty < contract_size_short:
+                pass
+                # self.tg_send(f'Минимальный размер контракта на {short_ex} > чем размер позиции {qty}. Открыть не получится')
+        except:
+            pass
+        return qty
+
+    async def open_order(self, direction, symbol, exchange, size):
+        if not len(re.findall(".+USDT", symbol)):
+            symbol = symbol+'/USDT'
         symbol=symbol.replace('/','')
+        print("OPEN SIMBOL, qty = ",symbol, size)
         client = self.dict[exchange]
+        if float(size) > 20:
+            size = int(float(size))
         if direction=='long':
-            await client.open_long_usdt(symbol = symbol, usdt_amount = self.size, leverage = self.leverage)
+            await client.open_long(symbol = symbol, qty = str(size * self.leverage), leverage = self.leverage)
         elif direction=='short':
-            await client.open_short_usdt(symbol = symbol, usdt_amount = self.size, leverage = self.leverage)
-        
+            await client.open_short(symbol = symbol, qty = str(size * self.leverage), leverage = self.leverage)
+
+            
     async def close_order(self, symbol, exchange):
+        if not len(re.findall(".+USDT", symbol)):
+            symbol = symbol+'/USDT'
         symbol=symbol.replace('/','')
         client = self.dict[exchange]
-        await client.close_all_positions(symbol = symbol)
+        res = await client.close_all_positions(symbol = symbol)
+        if (res['long_closed'] or res['short_closed']) and exchange == 'htx':
+            await self.close_order(symbol=symbol, exchange=exchange)
 
 class Logic():
     def __init__(self):
@@ -106,6 +159,8 @@ class Logic():
      # загружаем переменные из .env
 
     #Подставь свои директории
+        self.c = Calc()
+        self.size = 60
         self.balance = {
             "okx": 0,
             "bitget": 0,
@@ -114,6 +169,9 @@ class Logic():
             "htx": 0,
             "kucoin_futures": 0
         }
+        self.new_balance = 1
+        self.all_balance = 1
+        self.profit = 0
         self.df_pairs_dir='data/symbols_cleared.csv'
         self.out_csv_dir="temp_data/funding_rates" # куда сохраняем
         self.logs_path ='data/logs.csv'
@@ -122,24 +180,111 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=5
-        self.check_price_finish=44
-        self.minutes_for_start_parse=45
+        self.check_price_start=7
+        self.check_price_finish=54
+        self.minutes_for_start_parse = 55
+        self.start_pars_pairs=2
+        #Интервал парсинга пар в часах
+        self.hours_parsingpairs_interval=24
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
         self.HEADERS = {
             "User-Agent": "funding-collector/1.0",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8", 
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
             "Connection": "keep-alive",
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.4
-        self.c=Calc()
+        self.demanded_funding_rev=0.5
+
+    async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
+        """
+        Возвращает снимок риска по стороне:
+        {
+          'exchange': ..., 'symbol': ..., 'side': 'long'|'short',
+          'entry_usdt': float, 'pnl': float, 'loss_pct': float, 'qty': float|None
+        }
+        qty может отсутствовать (зависит от клиента/логов).
+        """
+        try:
+            pos = await self.c.get_open_position(symbol=symbol, exchange=exchange)
+            if not pos:
+                return None
+            entry_usdt = float(pos.get('entry_usdt') or 0.0)
+            pnl = float(pos.get('pnl') or 0.0)
+            loss_pct = max(0.0, -pnl) / entry_usdt if entry_usdt > 0 else 0.0
+            return {
+                'exchange': exchange,
+                'symbol': symbol,
+                'side': pos.get('side'),
+                'entry_usdt': entry_usdt,
+                'pnl': pnl,
+                'loss_pct': loss_pct
+            }
+        except Exception:
+            return None
+
+    async def _anti_liq_guard(self, row: pd.Series):
+        """
+        row — строка активной позиции из logs_df (status=active).
+        Выполняет:
+          - оценку риска по обеим сторонам
+          - частичную разгрузку при необходимости
+          - симметричную подстройку второй стороны
+        """
+        symbol     = str(row["symbol"])
+        long_ex    = str(row["long_exchange"])
+        short_ex   = str(row["short_exchange"])
+
+        # 1) Снимки риска
+        r_long  = await self._position_risk_snapshot(long_ex,  symbol)
+        r_short = await self._position_risk_snapshot(short_ex, symbol)
+        if not r_long or not r_short:
+            return  # нет данных — аккуратно выходим
+
+        # 2) Пороговые уровни (можно параметризовать через .env)
+        DANGER = 0.60     # 60% маржи "съедено" → начинаем снижать
+        PANIC  = 0.85     # критика → закрыть почти всё (или всё)
+
+        # 3) Кого резать первым
+        hot_side = None
+        if r_long['loss_pct'] >= DANGER or r_short['loss_pct'] >= DANGER:
+            hot_side = r_long if r_long['loss_pct'] >= r_short['loss_pct'] else r_short
+
+        if not hot_side:
+            return  # пока всё ок
+
+        cold_side = r_short if hot_side is r_long else r_long
+
+        # 4) Сколько срезать
+        if hot_side['loss_pct'] >= PANIC:
+            # Срочно глушим обе стороны
+            print(f"[guard] PANIC close {symbol}: {long_ex} & {short_ex}")
+            await asyncio.gather(
+                self.c.close_order(symbol=symbol, exchange=long_ex),
+                self.c.close_order(symbol=symbol, exchange=short_ex),
+            )
+            # логи
+            # тут пометь в logs_df -> status='closed' (как у тебя ниже в run_window)
+            return
+
+        # DANGER-режим: аккуратная разгрузка
+        # Пропорция разгрузки зависит от перегрева, например 25–50%
+        reduce_frac = 0.25 if hot_side['loss_pct'] < 0.75 else 0.5
+        await self.c.close_order(exchange=hot_side['exchange'], symbol=symbol)
+
+        # Чтобы не остаться с дельтой, симметрично уменьшаем вторую сторону
+        # (можно альтернативно "доворачивать" по USDT-нотионалу, но в простом варианте — одинаковая доля qty)
+
+        await self.c.close_order(exchange=cold_side['exchange'], symbol=symbol)
+        print(f"[guard] DANGER on {hot_side['exchange']}:{symbol} loss_pct={hot_side['loss_pct']:.2f} → close ~{reduce_frac*100:.0f}%")
+        self.tg_send(f"[guard] DANGER on {hot_side['exchange']}:{symbol} loss_pct={hot_side['loss_pct']:.2f} → close ~{reduce_frac*100:.0f}%")
+
+        # (опционально) Можно сразу обновить logs_df.qty = qty * (1 - reduce_frac)
 
 # ===== Утилиты =====
 #self.RETRIES не рботало здесь поставил 3
@@ -240,91 +385,119 @@ class Logic():
 # ---------- 2) парсеры по биржам ----------
     def get_last_price_bitget(self,symbol: str) -> float:
         url = "https://api.bitget.com/api/mix/v1/market/ticker"
-        try:
-            r = requests.get(url, params={"symbol": symbol}, timeout=10)
-            r.raise_for_status()
-            return float(r.json()["data"]["last"])
-        except Exception as e:
-            print(f"Ошибка получения цены с bitget ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r.raise_for_status()
+                flag = 5
+                return float(r.json()["data"]["last"])
+            except Exception as e:
+                print(f"Ошибка получения цены с bitget ({symbol}): {e}")
+                flag+=1
+                return 100
 
     def get_last_price_bybit(self,symbol: str) -> float:
         url = "https://api.bybit.com/v5/market/tickers"
-        try:
-            r = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=10)
-            r.raise_for_status()
-            data = r.json()["result"]["list"][0]
-            return float(data["lastPrice"])
-        except Exception as e:
-            print(f"Ошибка получения цены с bybit ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+                r = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=10)
+                r.raise_for_status()
+                data = r.json()["result"]["list"][0]
+                flag = 5
+                return float(data["lastPrice"])
+            except Exception as e:
+                print(f"Ошибка получения цены с bybit ({symbol}): {e}")
+                flag+=1
+                return 100
 
     def get_last_price_gate(self,symbol: str) -> float:
-        try:
-        # USDT-margined futures
-            url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
-            r = requests.get(url, params={"contract": symbol}, timeout=10)
-            r.raise_for_status()
-            return float(r.json()[0]["last"])
-        except Exception as e:
-            print(f"Ошибка получения цены с gate ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+            # USDT-margined futures
+                url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
+                r = requests.get(url, params={"contract": symbol}, timeout=10)
+                r.raise_for_status()
+                flag = 5
+                return float(r.json()[0]["last"])
+            except Exception as e:
+                print(f"Ошибка получения цены с gate ({symbol}): {e}")
+                flag+=1
+                return 100
 
     def get_last_price_okx(self,symbol: str) -> float:
-        try:
-            url = "https://www.okx.com/api/v5/market/ticker"
-            r = requests.get(url, params={"instId": symbol}, timeout=10)
-            r.raise_for_status()
-            return float(r.json()["data"][0]["last"])
-        except Exception as e:
-            print(f"Ошибка получения цены с okx ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+                url = "https://www.okx.com/api/v5/market/ticker"
+                r = requests.get(url, params={"instId": symbol}, timeout=10)
+                r.raise_for_status()
+                flag = 5
+                return float(r.json()["data"][0]["last"])
+            except Exception as e:
+                print(f"Ошибка получения цены с okx ({symbol}): {e}")
+                flag+=1
+                return 100
     
 
     def get_last_price_htx(self,symbol: str) -> float:
-        try:
-            # HTX (Huobi) linear-swap. Берём merged (в нём close = last)
-            url = "https://api.hbdm.com/linear-swap-ex/market/detail/merged"
-            r = requests.get(url, params={"contract_code": symbol}, timeout=10)
-            r.raise_for_status()
-            return float(r.json()["tick"]["close"])
-        except Exception as e:
-            print(f"Ошибка получения цены с htx ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+                # HTX (Huobi) linear-swap. Берём merged (в нём close = last)
+                url = "https://api.hbdm.com/linear-swap-ex/market/detail/merged"
+                r = requests.get(url, params={"contract_code": symbol}, timeout=10)
+                r.raise_for_status()
+                flag = 5
+                return float(r.json()["tick"]["close"])
+            except Exception as e:
+                print(f"Ошибка получения цены с htx ({symbol}): {e}")
+                flag+=1
+                return 100
 
     def get_last_price_mexc(self,symbol: str) -> float:
         # MEXC futures/contract API
         url = "https://contract.mexc.com/api/v1/contract/ticker"
-        try:
-            r = requests.get(url, params={"symbol": symbol}, timeout=10)
-            r.raise_for_status()
-            j = r.json()
-            
-            data = j.get("data")
-            if isinstance(data, list) and len(data) > 0:
-                data = data[0]
-            elif isinstance(data, dict):
-                pass  # уже словарь, оставляем
-            else:
-                return 100 # нет данных
-            
-            # поле может быть "lastPrice" или "last"
-            price_str = data.get("lastPrice") or data.get("last")
-            return float(price_str) if price_str else 100
+        flag = 0
+        while flag < 5:
+            try:
+                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r.raise_for_status()
+                j = r.json()
+                
+                data = j.get("data")
+                if isinstance(data, list) and len(data) > 0:
+                    data = data[0]
+                elif isinstance(data, dict):
+                    pass  # уже словарь, оставляем
+                else:
+                    return 100 # нет данных
+                
+                # поле может быть "lastPrice" или "last"
+                price_str = data.get("lastPrice") or data.get("last")
+                flag=5
+                return float(price_str) if price_str else 100
 
-        except Exception as e:
-            print(f"Ошибка получения цены с MEXC ({symbol}): {e}")
-            return 100
+            except Exception as e:
+                flag+=1
+                print(f"Ошибка получения цены с MEXC ({symbol}): {e}")
+                return 100
 
     def get_last_price_kucoin(self,symbol: str) -> float:
-        try:
-            url = "https://api-futures.kucoin.com/api/v1/ticker"
-            r = requests.get(url, params={"symbol": symbol}, timeout=10)
-            r.raise_for_status()
-            return float(r.json()["data"]["price"])
-        except Exception as e:
-            print(f"Ошибка получения цены с kucoin ({symbol}): {e}")
-            return 100
+        flag = 0
+        while flag < 5:
+            try:
+                url = "https://api-futures.kucoin.com/api/v1/ticker"
+                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r.raise_for_status()
+                flag = 5
+                return float(r.json()["data"]["price"])
+            except Exception as e:
+                flag+=1
+                print(f"Ошибка получения цены с kucoin ({symbol}): {e}")
+                return 100
 
 
     def get_futures_last_prices(self,exchange,universal_ticker: str) -> Dict[str, float]:
@@ -346,32 +519,38 @@ class Logic():
         
         return price
 
-    def normalize_symbol(self,sym: str) -> str:
-        """
-        Приводит тикер к виду BASE/QUOTE.
-        Работает с форматами:
-        BTC-USDT, BTC_USDT, BTCUSDT, BTCUSDT_UMCBL, XBTUSDTM, BTC-USDT-SWAP и т.п.
-        """
-        if not isinstance(sym, str) or not sym.strip():
-            return None
+    def normalize_symbol(self,sym: str) -> str | None:
+            """
+            Приводит тикер к виду BASE/QUOTE.
+            Понимает форматы:
+            BTC-USDT, BTC_USDT, BTCUSDT, BTCUSDT_UMCBL, XBTUSDTM, BTC-USDT-SWAP, AAVEUSDTM и т.п.
+            """
+            if not isinstance(sym, str) or not sym.strip():
+                return None
 
-        s = sym.upper().strip()
+            s = sym.upper().strip()
 
-        # 1. Удалим лишние суффиксы
-        s = re.sub(r'(_UMCBL|_CMCBL|_DMCBL|USDTM|-SWAP|PERP|_PERP)$', '', s)
+            # 1) убрать разделители
+            s = s.replace('-', '').replace('_', '').replace(':', '')
+            s = re.sub(r'[^A-Z0-9]', '', s)
+            # 2) нормализовать "маржинальные" суффиксы к обычным котировкам
+            #    USDTM -> USDT, USDCM -> USDC
+            for alias, norm in (('USDTM', 'USDT'), ('USDCM', 'USDC')):
+                if s.endswith(alias):
+                    s = s[:-len(alias)] + norm
+                    break
 
-        # 2. Уберём спецсимволы ($)
-        s = re.sub(r'[^A-Z0-9]', '', s)
+            # 3) убрать общие хвосты типа SWAP/PERP/UMCBL/CMCBL/DMCBL, если остались
+            s = re.sub(r'(SWAP|PERP|UMCBL|CMCBL|DMCBL)$', '', s)
 
-        # 3. Определим базу и котировку
-        # самые частые котировки
-        for quote in ["USDT", "USDC", "USD", "BTC", "ETH"]:
-            if s.endswith(quote):
-                base = s[:-len(quote)]
-                return f"{base}/{quote}"
+            # 4) вычленить базу/котировку по списку известных квот
+            for quote in ('USDT', 'USDC', 'USD', 'BTC', 'ETH'):
+                if s.endswith(quote) and len(s) > len(quote):
+                    base = s[:-len(quote)]
+                    return f'{base}/{quote}'
 
-        # fallback — если не распознали
-        return s
+            # fallback — вернуть как есть (уже очищенный)
+            return s
 
 
     def now_utc_iso(self) -> str:
@@ -393,6 +572,174 @@ class Logic():
             return pd.to_datetime(int(s), unit="s", utc=True).strftime("%Y-%m-%d %H:%M:%S%z")
         except Exception:
             return None
+    def _normalize_universal(self, symbol: str) -> str:
+        """
+        Приводим к BASE/QUOTE (например, 'BTCUSDT' -> 'BTC/USDT').
+        """
+        s = symbol.upper().strip().replace('-', '').replace('_', '')
+        for quote in ('USDT', 'USDC', 'USD', 'BTC', 'ETH'):
+            if s.endswith(quote) and len(s) > len(quote):
+                base = s[:-len(quote)]
+                return f'{base}/{quote}'
+        return symbol
+
+    def _to_exchange_symbol(self, exchange: str, universal: str) -> str:
+        """
+        Конвертация универсального символа BASE/QUOTE в формат нужной биржи.
+        """
+        if '/' in universal:
+            base, quote = universal.split('/')
+        else:
+            # fallback, считаем что без слэша
+            # например BTCUSDT -> BTC/USDT
+            m = re.match(r'^([A-Z0-9]+)(USDT|USDC|USD|BTC|ETH)$', universal)
+            if m:
+                base, quote = m.group(1), m.group(2)
+            else:
+                base, quote = universal, 'USDT'
+
+        ex = exchange.lower()
+        if ex == 'bitget':
+            return f"{base}{quote}_UMCBL"
+        if ex == 'bybit':
+            return f"{base}{quote}"
+        if ex == 'gate':
+            return f"{base}_{quote}"
+        if ex == 'okx':
+            return f"{base}-{quote}-SWAP"
+        if ex in ('htx', 'huobi'):
+            return f"{base}-{quote}"
+        if ex in ('kucoin_futures', 'kucoin'):
+            return f"{base}{quote}M"
+        return f"{base}{quote}"
+
+    async def _get_json(self, client: httpx.AsyncClient, url: str, params: dict | None = None, retries: int = 3) -> dict:
+        last_exc = None
+        for i in range(retries):
+            try:
+                r = await client.get(url, params=params, timeout=httpx.Timeout(15.0, connect=15.0, read=15.0))
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                last_exc = e
+                await asyncio.sleep(0.7 * (i + 1))
+        raise last_exc
+
+    def _to_float(self, x) -> Optional[float]:
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    async def get_last_funding(self, exchange: str, symbol: str) -> Optional[float]:
+        """
+        Вернёт последнюю ЗАВЕРШЁННУЮ ставку финансирования (previous/last) для пары на указанной бирже.
+        Возвращает float (доля, например 0.0001 == 0.01%) или None, если не удалось получить.
+        """
+        if not len(re.findall(".+USDT", symbol)):
+            symbol = symbol+'/USDT'
+        symbol=symbol.replace('/','')
+
+        ex = exchange.lower().strip()
+        if ex == 'huobi':
+            ex = 'htx'
+        if ex == 'kucoin':
+            ex = 'kucoin_futures'
+
+        # универсальный символ -> формат биржи
+        uni = self._normalize_universal(symbol)
+        sym = self._to_exchange_symbol(ex, uni)
+
+        async with httpx.AsyncClient() as client:
+            try:
+                # ---- Bybit ----
+                if ex == 'bybit':
+                    # История финансирования
+                    # GET /v5/market/funding/history?category=linear&symbol=BTCUSDT&limit=1
+                    # response.result.list[0].fundingRate  (последняя завершённая)
+                    url = "https://api.bybit.com/v5/market/funding/history"
+                    params = {"category": "linear", "symbol": sym, "limit": 1}
+                    data = await self._get_json(client, url, params)
+                    items = (data.get("result") or {}).get("list") or []
+                    if items:
+                        return self._to_float(items[0].get("fundingRate")) 
+                    # fallback: попробуем inverse (на всякий)
+                    params["category"] = "inverse"
+                    data = await self._get_json(client, url, params)
+                    items = (data.get("result") or {}).get("list") or []
+                    if items:
+                        return self._to_float(items[0].get("fundingRate"))
+                    return None
+
+                # ---- OKX ----
+                if ex == 'okx':
+                    # GET /api/v5/public/funding-rate-history?instId=BTC-USDT-SWAP&limit=1
+                    url = "https://www.okx.com/api/v5/public/funding-rate-history"
+                    params = {"instId": sym, "limit": 1}
+                    data = await self._get_json(client, url, params)
+                    arr = data.get("data") or []
+                    if arr:
+                        return self._to_float(arr[0].get("fundingRate"))
+                    return None
+
+                # ---- Bitget ----
+                if ex == 'bitget':
+                    # GET /api/mix/v1/market/history-fundRate?symbol=BTCUSDT_UMCBL&pageSize=1
+                    url = "https://api.bitget.com/api/mix/v1/market/history-fundRate"
+                    params = {"symbol": sym, "pageSize": 1}
+                    data = await self._get_json(client, url, params)
+                    arr = data.get("data") or []
+                    if arr:
+                        return self._to_float(arr[0].get("fundingRate"))
+                    return None
+
+                # ---- Gate.io ----
+                if ex == 'gate':
+                    # GET /api/v4/futures/{settle}/funding_rate?contract=BTC_USDT&limit=1
+                    # settle определяем из котировки (обычно usdt)
+                    settle = "usdt"
+                    url = f"https://api.gateio.ws/api/v4/futures/{settle}/funding_rate"
+                    params = {"contract": sym, "limit": 1}
+                    data = await self._get_json(client, url, params)
+                    # ответ — список объектов с полем "r" (rate)
+                    if isinstance(data, list) and data:
+                        # "r" — строка с числом, например "0.0001"
+                        return self._to_float(data[0].get("r"))
+                    return None
+
+                # ---- HTX (Huobi) ----
+                if ex == 'htx':
+                    # GET /linear-swap-api/v1/swap_historical_funding_rate?contract_code=BTC-USDT&page_index=1&page_size=1
+                    url = "https://api.hbdm.com/linear-swap-api/v1/swap_historical_funding_rate"
+                    params = {"contract_code": sym, "page_index": 1, "page_size": 1}
+                    data = await self._get_json(client, url, params)
+                    arr = (data.get("data") or {}).get("data") or data.get("data") or []
+                    # формат бывает как {"data":{"data":[...]}} или просто {"data":[...]}
+                    if isinstance(arr, dict):
+                        arr = arr.get("data") or []
+                    if arr:
+                        return self._to_float(arr[0].get("funding_rate")) 
+                    return None
+
+                # ---- KuCoin Futures ----
+                if ex == 'kucoin_futures':
+                    # История за 7 дней:
+                    # GET /api/v1/funding-rate?symbol=XBTUSDTM
+                    # Возвращает {"data":[{"timePoint":..., "value":"0.0001"}, ...]} (обычно по времени возр.)
+                    url = "https://api-futures.kucoin.com/api/v1/funding-rate"
+                    params = {"symbol": sym}
+                    data = await self._get_json(client, url, params)
+                    arr = data.get("data") or []
+                    if isinstance(arr, list) and arr:
+                        # берём последний элемент
+                        return self._to_float(arr[-1].get("value"))
+                    return None
+
+                # неизвестная биржа
+                return None
+
+            except Exception:
+                return None
 
 
     # ===== Фетчеры по биржам =====
@@ -687,6 +1034,16 @@ class Logic():
                 "long_funding", "short_funding", "possible_revenue","long_price", "short_price", "diff","status"
             ])
 
+    def compute_close_threshold_pct(self, possible_rev_frac: float) -> float:
+        """
+        possible_rev_frac — в долях (0.005 = 0.5%).
+        Возвращаем порог в процентных пунктах для current_old_diff (который тоже в %).
+        """
+        base = 0.20   # базовый порог 0.20 п.п.
+        k    = 8.0    # усиление в зависимости от фандинга
+        # при 0.5% фандинга → надбавка 0.5 * 8 = 4 п.п.; итог ≈ 4.2 п.п.
+        return max(0.10, base + k * possible_rev_frac)
+
 
 # ===== Пример использования =====
     async def run_at_50(self):
@@ -702,15 +1059,15 @@ class Logic():
             print(f"[{datetime.now():%H:%M:%S}] at_50: стартую")
             
             time_start=time.time()
-            df_pairs = pd.read_csv(self.df_pairs_dir)
+            df_pairs1 = pd.read_csv(self.df_pairs_dir)
+            df_pairs1["symbol_n"] = df_pairs1["symbol"].apply(self.normalize_symbol)
+            df_pairs = df_pairs1[df_pairs1["symbol_n"].duplicated(keep=False)]
             # df_pairs = await asyncio.to_thread(pd.read_csv(df_pairs_dir))
             logs_df=self.load_logs()
             logs_df_c=logs_df.copy()
             logs_df['status']='closed'
             
             df = await self.collect_funding(df_pairs)
-            
-
             # Сохраняем
             out_csv = self.out_csv_dir + datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
             df.to_csv(out_csv, index=False, encoding="utf-8")
@@ -718,7 +1075,8 @@ class Logic():
             print("Saved:", out_csv)
             df_funding=df
             df_funding = df_funding[df_funding['exchange'] != 'mexc']
-            # df_funding = df_funding[df_funding['exchange'] != 'htx']
+            df_funding = df_funding[df_funding['exchange'] != 'gate']
+            df_funding = df_funding[df_funding['exchange'] != 'kucoin_futures']
             df_funding=df_funding.dropna(subset=['funding_rate'])
             df_funding['symbol_u']=df_funding['symbol']
             df_funding['symbol']=df_funding['symbol_n']
@@ -812,6 +1170,8 @@ class Logic():
                 )
             )
 
+            pairs = pairs[pairs['min_exchange'] != pairs['max_exchange']].copy()
+            
             # 7) выбираем «лучшую» пару на символ (макс. метрика)
             best_pairs = (
                 pairs.sort_values(['symbol', 'funding_diff_metric'], ascending=[True, False])
@@ -864,16 +1224,17 @@ class Logic():
             text=[]
             self.all_balance = 0
 
-            for ex in ['bybit', 'bitget', 'okx', 'gate', 'kucoin_futures']:
+            for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
                 self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
                 self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
-            
+
             for i in range(5):
                 if i == 0:
                     text.append(f"""💰БАЛАНС: {round(self.all_balance, 2)} USDT\n
 🟠BYBIT: {self.balance.get('bybit'):.2f}\n
 🔵BITGET: {self.balance.get('bitget'):.2f}\n
 ⚫OKX: {self.balance.get('okx'):.2f}\n
+🟤HTX: {self.balance.get('htx'):.2f}\n
 ⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
 🟢GATE: {self.balance.get('gate'):.2f}\n\n 
 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n{analyze(analytical_df['symbol'].iloc[i])}""")
@@ -893,11 +1254,10 @@ class Logic():
             time_finish=time.time()
 
             #Функции для бота покупки
-
-
             df_funding11["symbol_n"] = df_funding11["symbol"].apply(self.normalize_symbol)
             df_funding11=df_funding11[df_funding11['exchange']!='mexc']
-            # df_funding11=df_funding11[df_funding11['exchange']!='htx']
+            df_funding11=df_funding11[df_funding11['exchange']!='gate']
+            df_funding11=df_funding11[df_funding11['exchange']!='kucoin_futures']
             df_funding11=df_funding11.dropna(subset=["funding_rate"])
             df_funding1=df_funding11[['timestamp_utc','exchange','symbol','symbol_n','funding_rate','funding_time']]
             df_funding1['funding_rate']=df_funding1['funding_rate']*100
@@ -908,8 +1268,10 @@ class Logic():
             df_result=result_sorted.copy()
             df_result=df_result[df_result['min_exchange']!='mexc']
             df_result=df_result[df_result['max_exchange']!='mexc']
-            # df_result=df_result[df_result['min_exchange']!='htx']
-            # df_result=df_result[df_result['max_exchange']!='htx']
+            df_result=df_result[df_result['min_exchange']!='gate']
+            df_result=df_result[df_result['max_exchange']!='gate']
+            df_result=df_result[df_result['min_exchange']!='kucoin_futures']
+            df_result=df_result[df_result['max_exchange']!='kucoin_futures']
             df_result['funding_diff_metric']=df_result['funding_diff_metric']*100
             df_result['max_rate']=df_result['max_rate']*100
             df_result['min_rate']=df_result['min_rate']*100
@@ -939,10 +1301,8 @@ class Logic():
                     
                     current_long_rev = -subset.iloc[0] if not subset.empty else 0
                     
-                    mask = (df_funding1_filtered['symbol_n'] == symbol) & (df_funding1_filtered['exchange'] == current_short)
-                    
+                    mask = (df_funding1_filtered['symbol_n'] == symbol) & (df_funding1_filtered['exchange'] == current_short)     
                     subset = df_funding1_filtered.loc[mask, 'funding_rate']
-
                     #смотрим ситцацию для текущего часа, где еще можем заработать на фандингах в текузщем часу, ничего не меняя.
 
                     current_short_rev = subset.iloc[0] if not subset.empty else 0
@@ -951,11 +1311,15 @@ class Logic():
                     current_total_rev=current_long_rev+current_short_rev
                     print(current_total_rev)
                     if current_total_rev>=0:
+                        idx = mask_active.index[e]
                         self.tg_send(f'Оставляем позиции по {symbol} с прошлого часа, несмотря на доход меньше {self.demanded_funding_rev}, они еще не убыточны')
                         logs_df.loc[idx, 'status'] = 'active'
                     else:
                         idx = mask_active.index[e]
-                        self.tg_send(f'Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
+                        for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+                            self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
+                        self.profit = (self.new_balance - self.all_balance) / self.all_balance
+                        self.tg_send(f'Разница в карман: {(self.profit *100):.2f}\n💰БАЛАНС: {self.new_balance:.2f} %\n\n Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
                         await asyncio.gather(self.c.close_order(symbol=symbol, exchange=current_long),
                                 self.c.close_order(symbol=symbol, exchange=current_short))
                         # Обновляем значение в исходном df
@@ -963,61 +1327,83 @@ class Logic():
             logs_df.to_csv(self.logs_path, index=False)           
                         
             i=0 
-            while i<=len(df_result)-1 and df_result.iloc[i]['funding_diff_metric']>self.demanded_funding_rev:
+
+            new_symbols=[] 
+            while i<=len(df_result)-1 and df_result.iloc[i]['funding_diff_metric']>=self.demanded_funding_rev:
                  
                 row = df_result.iloc[i]
                 sym = row['symbol']
                 print(sym)
-                # if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
-                #     print("ЭЛИФ 0", df_result.iloc[i]['min_funding_time'], df_result.iloc[i]['max_funding_time'])
-
-                f_long, f_short = self.get_prices_parallel(
-    df_result.iloc[i]['min_exchange'],
-    df_result.iloc[i]['max_exchange'],
-    df_result.iloc[i]['symbol']
-)
-                diff_f=(f_long-f_short)/f_long*100
                 long_ex = row['min_exchange']
                 short_ex = row['max_exchange']
-
-                if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
-                    f_long, f_short = self.get_prices_parallel(
-                    df_result.iloc[i]['min_exchange'],
-                    df_result.iloc[i]['max_exchange'],
-                    df_result.iloc[i]['symbol']
+                f_long, f_short = self.get_prices_parallel(
+                    long_ex,
+                    short_ex,
+                    sym
                 )
-                    
-                    diff_f=(f_long-f_short)/f_long*100
+                diff_f=(f_long-f_short)/f_long*100
+
+                #если время разное, ищем биржу с лучшим diff
+                if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
                     long_ex = row['min_exchange']
                     short_ex = row['max_exchange']
+                    short_funding=row['max_rate']
+                    long_funding=row['min_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                        long_ex,
+                        short_ex,
+                        sym
+                    )
+                    diff_f=(f_long-f_short)/f_long*100
 
                 #если время разное, ищем биржу с лучшим diff
                 #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
-                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time']:
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['max_rate']>0:
+                    short_ex=df_result.iloc[i]['max_exchange']
+                    long_ex=df_result.iloc[i]['min_exchange']
+                    short_funding=row['max_rate']
+                    long_funding=row['min_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                    long_ex,
+                    short_ex,
+                    df_result.iloc[i]['symbol']
+                )
+                    diff_f=(f_long-f_short)/f_long*100
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['max_rate']<=0:
+                    long_funding=row['max_rate']
+                    short_funding=row['min_rate']
                     short_ex=df_result.iloc[i]['min_exchange']
                     long_ex=df_result.iloc[i]['max_exchange']
                     f_long, f_short = self.get_prices_parallel(
                     long_ex,
                     short_ex,
                     df_result.iloc[i]['symbol']
-                )
-                    print(f'short {short_ex} long {long_ex}')
-                    diff_f=(f_long-f_short)/f_long*100
-                    
+                ) 
 
                 #Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене   
-                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']:
-                    short_ex=df_result.iloc[i]['max_exchange']
-                    long_ex= df_result.iloc[i]['min_exchange']
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['min_rate']>0:
+                    long_funding=row['max_rate']
+                    short_funding=row['min_rate']
+                    short_ex=df_result.iloc[i]['min_exchange']
+                    long_ex= df_result.iloc[i]['max_exchange']
                     f_long, f_short = self.get_prices_parallel(
                             long_ex,
                             short_ex,
                             df_result.iloc[i]['symbol']
                         )
-                    print(f'long{long_ex} short {short_ex}')
                     diff_f=(f_long-f_short)/f_long*100
-                    
-                
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']and df_result.iloc[i]['min_rate']<=0:
+                    short_ex=df_result.iloc[i]['max_exchange']
+                    long_ex= df_result.iloc[i]['min_exchange']
+                    long_funding=row['min_rate']
+                    short_funding=row['max_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                            long_ex,
+                            short_ex,
+                            df_result.iloc[i]['symbol']
+                        )
+                    diff_f=(f_long-f_short)/f_long*100
+
                 if self.pair_already_logged(long_ex, short_ex, logs_df,sym):
                     print(f"Не открываем, ⏭️ биржа из пары уже в используется: {long_ex} ↔ {short_ex}")
                     self.tg_send(f"Не открываем, ⏭️ биржа из пары уже в используется: {long_ex} ↔ {short_ex}")
@@ -1025,30 +1411,50 @@ class Logic():
                     continue
                 #Проверяем каждую биржу и пару, может что то есть в current_possibilities. Тогда что то открывать не надо уже. Проверка доход из current_possibilities>possible_funding-0.5. Тогда используем current_possibilities
                 
+                mask=logs_df_c[logs_df_c['status']=='active']
+                mask_long_eq=mask[(mask['long_exchange']==long_ex)&(mask['symbol']==sym)]
+                mask_short_eq=mask[(mask['short_exchange']==short_ex)&(mask['symbol']==sym)]
+                if diff_f>df_result.iloc[i]['funding_diff_metric'] and len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
+                    new_symbols.append(sym)
+                    self.tg_send(f"Разница между биржами {diff_f:.4f} > Дохода от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}")
+                        
+                if diff_f>df_result.iloc[i]['funding_diff_metric'] and df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                    mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
+                    self.tg_send(f"Не открываем. Разница {diff_f:.4f} > Доходп от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}" )
+                    for idx, row in mask_active_rest.iterrows():
+                        close_rest_sym=row['symbol']
+                        close_rest_long=row['long_exchange']
+                        close_rest_short=row['short_exchange']
+                        print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
+                        self.tg_send(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
 
-                
-
-                if diff_f>df_result.iloc[i]['funding_diff_metric']:
-
+                        await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
+                                self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
+                        logs_df.loc[idx, 'status'] = 'closed'
+                        logs_df.to_csv(self.logs_path, index=False)
+                    mask_active_syms=mask[mask['symbol'].isin(new_symbols)]
+                    for idx, row in mask_active_syms.iterrows():
+                        hold_sym=row['symbol']
+                        hold_long=row['long_exchange']
+                        hold_short=row['short_exchange']
+                        print(f'Оставляем позиции по {hold_sym} лонг на {hold_long}, шорт на {hold_short}')
+                        self.tg_send(f'Оставляем позиции по {hold_sym} лонг на {hold_long}, шорт на {hold_short}')
+                        logs_df.loc[idx, 'status'] = 'active'
+                        logs_df.to_csv(self.logs_path, index=False)
+                elif diff_f>df_result.iloc[i]['funding_diff_metric']:
                     print(f'Не открываем по {sym}, разница между биржами {diff_f} больше потенциального дохода от фандинга {df_result.iloc[i]["funding_diff_metric"]}')
                     self.tg_send(f'Не открываем по {sym}, разница между биржами {diff_f} больше потенциального дохода от фандинга {df_result.iloc[i]["funding_diff_metric"]}')
+                
                 else:
-                                    
-                    
+                    print("AaaaAAAAAAAAAAAAAAAA")
+                    new_symbols.append(sym)
+                            
                     #open_position
-                    
-                    
 
-                    mask=logs_df_c[logs_df_c['status']=='active']
-                    mask_long_eq=mask[(mask['long_exchange']==long_ex)&(mask['symbol']==sym)]
-                    mask_short_eq=mask[(mask['short_exchange']==short_ex)&(mask['symbol']==sym)]
                     if len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
                         print(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
                         self.tg_send(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
-                        long_logs='hold'
-                        short_logs='hold'
-                                    
-
+                       
 
                     elif len(mask_long_eq)!=0:
                         mask_logs_long = (mask['long_exchange'] == long_ex)
@@ -1061,10 +1467,9 @@ class Logic():
                             print(f'Оставляем лонг {long_ex}')
                             print(f'Открываем позицию по {sym}, шорт {short_ex}')
                             self.tg_send(f'Открываем позицию по {sym}, шорт {short_ex}')
-                            
-                        
-                        self.c.close_order(symbol = mask.iloc[i]['symbol'], exchange=mask.iloc[i]['short_exchange'])
-                        self.c.open_order(direction='short',symbol=sym,exchange=short_ex)
+                            qty = mask['qty']
+                            await self.c.close_order(symbol = sym_close, exchange=short_ex_close)
+                            await self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty)
 
                     elif len(mask_short_eq)!=0:
                         mask_logs_short = (mask['short_exchange'] == short_ex)
@@ -1077,109 +1482,230 @@ class Logic():
                             print(f'Оставляем шорт {short_ex}')
                             print(f'Отрываем лонг {long_ex}')
                             self.tg_send(f'Отрываем лонг {long_ex}')
-
-                        short_logs='hold'
-                        
-                        self.c.close_order(symbol = mask.iloc[i]['symbol'], exchange=mask.iloc[i]['long_exchange'])
-                        self.c.open_order(direction='long',symbol=sym,exchange=long_ex)
+                            qty = mask['qty']
+                            await self.c.close_order(symbol = sym_close, exchange=long_ex_close)
+                            await self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty)
                     #Ищем позицию по с парой нужных нам бирж, закрываем ее.
                     else:
                         if len(mask)!=0:
                             
-                            mask_logs = (mask['long_exchange'] == long_ex) | (mask['short_exchange'] == short_ex)
-                            
-                            if mask_logs.any():
-                                row = mask.loc[mask_logs].iloc[0]
-                                long_ex_close=row['long_exchange']
-                                short_ex_close=row['short_exchange']
-                                sym_close=row['symbol']
-                                print(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+                            mask_logs = (
+                                    (
+                                        mask['long_exchange'].isin([long_ex, short_ex]) |
+                                        mask['short_exchange'].isin([long_ex, short_ex])
+                                    )
+                                    & ~mask['symbol'].isin(new_symbols)
+                                )
+
+                            if not mask.loc[mask_logs].empty:
+                                for _, row in mask.loc[mask_logs].iterrows():
+                                    long_ex_close=row['long_exchange']
+                                    short_ex_close=row['short_exchange']
+                                    sym_close=row['symbol']
+                                    print(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+                                    self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+
+                                    await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
+                                    self.c.close_order(sym_close,short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
-                                self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
-                                
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                                await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            elif sym in mask['symbol'].values:
+                                row = mask.loc[mask['symbol'] == sym].iloc[0]
+
+                                long_ex_close = row['long_exchange']
+                                short_ex_close = row['short_exchange']
+                                print(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
+                                self.tg_send(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
+
                                 await asyncio.gather(self.c.close_order(symbol=sym_close,exchange=long_ex_close),
-                                self.c.close_order(symbol=sym_close, exchange=short_ex_close))
-                                await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex))
-                            else:
-                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                    self.c.close_order(symbol=sym_close,exchange=short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
                                 await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex))
-                                print(3)
-                                
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            else:
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                                print("qty = ", qty)
+                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
+                                await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
                         else:
+                            qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                            print("qty = ", qty)
                             await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex))
-                            
-                            
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
                             print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
-                            self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                            self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
+
+                    pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
+                    pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
+
+                    long_price = pos_long['entry_price']
+                    short_price = pos_short['entry_price']
 
                     new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": df_result.iloc[i]['symbol'],
                         "long_exchange": long_ex,
                         "short_exchange":short_ex,
-                        "long_funding": df_result.iloc[i]['min_rate'],
-                        "short_funding":df_result.iloc[i]['max_rate'],
+                        "long_funding": long_funding,
+                        "short_funding":short_funding,
                         "possible_revenue":df_result.iloc[i]['funding_diff_metric'],
-                        "long_price":f_long,
-                        "short_price":f_short,
+                        "long_price":long_price,
+                        "short_price":short_price,
                         'diff':diff_f,
+                        'qty': qty,
                         "status":'active'
                         }
+                    
+                    if df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                        mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
+                        for idx, row in mask_active_rest.iterrows():
+                            close_rest_sym=row['symbol']
+                            close_rest_long=row['long_exchange']
+                            close_rest_short=row['short_exchange']
+                            print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
+                            await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
+                                self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
+                            logs_df.loc[idx, 'status'] = 'closed'
                     new_row_df=pd.DataFrame([new_row])
 
                     logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
                     if os.path.exists(self.logs_path):
                         new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
                     else:
-                        logs_df.to_csv(self.logs_path, index=False)
-                            
+                        logs_df.to_csv(self.logs_path, index=False)   
                 i+=1
+                    
+            
+
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
-    async def run_window(self):       
+    async def run_window(self):
+        self.confirmations = {}      
         while True:
             now = datetime.now()
-            minute = now.minute
+            seconds_15 = now.minute
             logs_df=self.load_logs()
             active_logs = logs_df[logs_df['status'] == 'active'].copy()
-            
+            if seconds_15 == 1:
+                try:
+                    # Загружаем свежий CSV и выделяем активные строки
+                    logs_df = self.load_logs()
+
+                    # Гарантируем нужные колонки (под твоё требование)
+                    for col in ("long_funding", "short_funding"):
+                        if col not in logs_df.columns:
+                            logs_df[col] = np.nan
+
+                    # Если в файле остались старые имена — обновим и их, чтобы не ломать совместимость
+                    legacy_cols = {
+                        "long_funding": "long_funding",
+                        "short_funding": "short_funding",
+                    }
+                    for old, new in legacy_cols.items():
+                        if old not in logs_df.columns and new in logs_df.columns:
+                            logs_df[old] = np.nan  # создадим, чтобы можно было синхронно поддерживать
+
+                    active_idx = logs_df.index[logs_df["status"] == "active"].tolist()
+                    if not active_idx:
+                        print("Нет активных записей для обновления funding.")
+                    else:
+                        for idx in active_idx:
+                            try:
+                                row = logs_df.loc[idx]
+                                long_ex  = str(row["long_exchange"])
+                                short_ex = str(row["short_exchange"])
+                                symbol   = str(row["symbol"])
+                                long_last_funding = row["long_funding"]
+                                short_last_funding = row["short_funding"]
+                                possible_revenue = row["possible_revenue"]
+                                if possible_revenue == abs(long_last_funding):
+                                    long_last_funding  = await self.get_last_funding(exchange=long_ex,  symbol=symbol) * 100
+                                    short_last_funding = 0
+                                elif possible_revenue == abs(short_last_funding):
+                                    short_last_funding  = await self.get_last_funding(exchange=short_ex,  symbol=symbol) * 100
+                                    long_last_funding = 0
+                                else:
+                                    short_last_funding  = await self.get_last_funding(exchange=short_ex,  symbol=symbol) * 100
+                                    long_last_funding  = await self.get_last_funding(exchange=long_ex,  symbol=symbol) * 100
+                                print(f"{symbol}: long={long_ex} => {long_last_funding}, short={short_ex} => {short_last_funding}")
+
+                                # Запись в новые поля (как ты просил)
+                                logs_df.loc[idx, "long_funding"]  = long_last_funding
+                                logs_df.loc[idx, "short_funding"] = short_last_funding
+                                logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
+
+                            except Exception as e_row:
+                                print(f"Ошибка при проверке {logs_df.loc[idx].get('symbol','?')}: {e_row}")
+
+                    try:
+                        logs_df.to_csv(self.logs_path, index=False)
+                        print(f"✅ funding обновлён в {self.logs_path}")
+                    except Exception as e_save:
+                        print(f"⚠️ не удалось записать лог: {e_save}")
+
+                except Exception as e:
+                    print(f"Неожиданная ошибка обновления funding: {e}")
+
+
             # работаем только с 5-й по 45-ю минуту включительно
-            if self.check_price_start <= minute <= self.check_price_finish and not active_logs[active_logs['status']=='active'].empty:
-                print(f"🟢 {now.strftime('%H:%M')} — выполняем проверку позиций...")
-                
+            if self.check_price_start <= seconds_15 <= self.check_price_finish and not active_logs[active_logs['status']=='active'].empty:
+                print(f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 for i in range(len(active_logs)):
+                    await self._anti_liq_guard(active_logs.iloc[i])
                     try:
                         long_ex = active_logs.iloc[i]['long_exchange']
                         print(active_logs)
                         short_ex = active_logs.iloc[i]['short_exchange']
-                        
+                        possible_revenue = active_logs.iloc[i]['possible_revenue']
+                        threshold_pct = self.compute_close_threshold_pct(possible_revenue)
                         symbol = active_logs.iloc[i]['symbol']
+                        print(possible_revenue, "   possible_revenue")
                         print(long_ex,symbol)
                         long_price = self.get_futures_last_prices(long_ex, symbol)
-                        
                         short_price = self.get_futures_last_prices(short_ex, symbol)
                         long_price, short_price = self.get_prices_parallel(
         long_ex,
         short_ex,
         symbol
-    )
-                        old_diff = (active_logs.iloc[i]['long_price']-active_logs.iloc[i]['short_price'])/long_price*100
-                        current_diff = (long_price - short_price)/long_price*100
-                        if current_diff > old_diff+self.diff_return:
-                            print(f"⚠️ {symbol}: разница выросла ({current_diff:.4f} > {old_diff:.4f}) — закрываем позиции")
-                            self.tg_send(f"⚠️ {symbol}: разница выросла ({current_diff:.4f} > {old_diff:.4f}) — закрываем позиции")
+    ) 
+                        current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
+                        print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
+                        print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
+                        print(current_old_diff, self.diff_return)
+                        try:
+                            self.confirmations[symbol] = self.confirmations[symbol]
+                        except:
+                            self.confirmations[symbol] = 0
+                        
+                        if current_old_diff >= self.diff_return:
+                            self.confirmations[symbol] += 1
+                        else:
+                            self.confirmations[symbol] = 0
+                        print(self.confirmations[symbol])
+                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 3:
+                            print(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
+                            self.tg_send(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             await asyncio.gather(
                             self.c.close_order(symbol=symbol, exchange=long_ex),
                             self.c.close_order(symbol=symbol, exchange=short_ex)
                         )
+                            self.new_balance = 0
+                            for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+                                self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
+                            self.profit = (self.new_balance - self.all_balance) / self.all_balance
+                            self.tg_send(f"💰БАЛАНС: {self.new_balance:.2f}\n\nПибыль: {self.profit:.2f}%")
                             active_logs['status']=active_logs[active_logs['symbol']==symbol]['status']=='none'
                             # close_positions(long_ex, short_ex, symbol)
                             mask_close = (
@@ -1200,11 +1726,11 @@ class Logic():
                         print(f"Ошибка при проверке {active_logs.iloc[i]['symbol']}: {e}")
 
                 # проверяем каждые 2 минуты, пока идёт окно
-                await asyncio.sleep(10)
+                await asyncio.sleep(1)
 
             else:
                 # ждём до следующего часа или следующей 5-й минуты
-                print(f"⏸ Сейчас {now.strftime('%H:%M')} — вне окна (ждём 5-ю минуту)")
+                print(f"⏸ Сейчас {now.strftime('%H:%M:%S')} — вне окна (ждём 5-ю минуту)")
                 await asyncio.sleep(60)
 
 
@@ -1223,9 +1749,37 @@ class Logic():
                     except Exception as e:
                         print(f"[ERR] Не удалось удалить {f.name}: {e}")
 
+
+
+    async def run_daily_task(self):
+        while True:
+                now = datetime.now()
+                target = now.replace(minute=self.start_pars_pairs, second=0, microsecond=0)
+                if now >= target:
+                    target += timedelta(hours=self.hours_parsingpairs_interval)
+                
+                wait = (target - now).total_seconds()
+                print(f"Ждём {wait/60:.1f} минут до {target.strftime('%H:%M')}")
+                await asyncio.sleep(wait)
+
+                # 🔥 запуск задачи
+                self.tg_send(f"▶️ Запускаем парсинг новых пар в {datetime.now().strftime('%H:%M:%S')}")
+                # await main_process()
+                try:
+                # await main_process()
+                    df_pairs= await Parsing().main()
+                    df_pairs.to_csv(self.df_pairs_dir)
+                    self.tg_send(f"▶Сохранили новые пары в {datetime.now().strftime('%H:%M:%S')}")
+                except:
+                    self.tg_send(f"Не получилось сохранить новые пары в {datetime.now().strftime('%H:%M:%S')}")
+                
+                # ждём минуту, чтобы не повторять в том же часу
+                await asyncio.sleep(60)
+
     async def main(self):
-        await asyncio.gather(self.run_window(), self.run_at_50())
+        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        
 
 if __name__ == "__main__":
     asyncio.run(Logic().main())
-
+    

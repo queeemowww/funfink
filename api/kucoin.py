@@ -1,6 +1,6 @@
 # kucoin_async_futures_mainnet.py
 from __future__ import annotations
-
+import re
 import os
 import hmac
 import time
@@ -330,7 +330,7 @@ class KucoinAsyncFuturesClient:
     # ======================================================
     #           Конвертация USDT -> size контрактов
     # ======================================================
-    async def usdt_to_size(
+    async def usdt_to_qty(
         self,
         symbol: str,
         usdt_amount: float | str,
@@ -365,14 +365,14 @@ class KucoinAsyncFuturesClient:
         contracts = usdt / cost_per_contract
         size_int = int(contracts.to_integral_value(rounding=ROUND_FLOOR))
 
-        # lotSize — минимальный шаг size
-        lot = _d(info.get("lotSize", "1"))
-        if lot <= 0:
-            lot = _d("1")
+        # self.contract_sizeSize — минимальный шаг size
+        self.contract_size = _d(info.get("self.contract_sizeSize", "1"))
+        if self.contract_size <= 0:
+            self.contract_size = _d("1")
 
-        size_adj = (_d(size_int) / lot).to_integral_value(rounding=ROUND_FLOOR) * lot
+        size_adj = (_d(size_int) / self.contract_size).to_integral_value(rounding=ROUND_FLOOR) * self.contract_size
         if size_adj <= 0:
-            size_adj = lot
+            size_adj = self.contract_size
 
         return str(int(size_adj))
 
@@ -506,6 +506,55 @@ class KucoinAsyncFuturesClient:
             # если не 330005 или повтор уже делали — бросаем выше
             raise
 
+    async def open_long(
+            self,
+            symbol: str,
+            qty: float | str,
+            *,
+            order_type: Literal["market","limit"] = "market",
+            price: Optional[str] = None,
+            leverage: Optional[int | str] = None,
+            client_oid: Optional[str] = None,
+        ):
+            """
+            Открыть лонг:
+            side="buy", tradeType="OPEN"
+            """
+            return await self._place_order(
+                symbol=symbol,
+                side="buy",
+                trade_type="OPEN",
+                size=qty,
+                order_type=order_type,
+                price=price,
+                leverage=leverage,
+                client_oid=client_oid,
+            )
+
+    async def open_short(
+        self,
+        symbol: str,
+        qty,
+        *,
+        order_type: Literal["market","limit"] = "market",
+        price: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+        client_oid: Optional[str] = None,
+    ):
+        """
+        Открыть шорт:
+        side="sell", tradeType="OPEN"
+        """
+        return await self._place_order(
+            symbol=symbol,
+            side="sell",
+            trade_type="OPEN",
+            size=qty,
+            order_type=order_type,
+            price=price,
+            leverage=leverage,
+            client_oid=client_oid,
+        )
     # ======================================================
     #           High-level открытие позиций
     # ======================================================
@@ -523,7 +572,7 @@ class KucoinAsyncFuturesClient:
         Открыть лонг:
         side="buy", tradeType="OPEN"
         """
-        size = await self.usdt_to_size(symbol, usdt_amount, side="buy")
+        size = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
         return await self._place_order(
             symbol=symbol,
             side="buy",
@@ -549,7 +598,7 @@ class KucoinAsyncFuturesClient:
         Открыть шорт:
         side="sell", tradeType="OPEN"
         """
-        size = await self.usdt_to_size(symbol, usdt_amount, side="sell")
+        size = await self.usdt_to_qty(symbol, usdt_amount, side="sell")
         return await self._place_order(
             symbol=symbol,
             side="sell",
@@ -836,6 +885,7 @@ class KucoinAsyncFuturesClient:
 
         data = await self._private("GET", "/api/v1/positions", query=query)
         pos_list = data.get("data") or []
+        print(pos_list)
         if not pos_list:
             return None
 
@@ -868,9 +918,10 @@ class KucoinAsyncFuturesClient:
                 "opened_at": opened_iso,
                 "symbol": p.get("symbol", ""),
                 "side": pos_side,
-                "usdt": format(position_value, "f"),
+                "entry_usdt": p.get("posCost"),
                 "leverage": lev,
-                "pnl": str(p.get("unrealisedPnl", "0"))
+                "pnl": str(p.get("unrealisedPnl", "0")),
+                "entry_price": str(p.get('avgEntryPrice'))
             })
 
         return out or None
@@ -919,7 +970,7 @@ class KucoinAsyncFuturesClient:
 
 # ---- простая отладка ----
 async def _example():
-    sym = "BIOUSDT"  # клиент сам превратит в "BIOUSDTM"
+    sym = "RESOLVUSDT"  # клиент сам превратит в "BIOUSDTM"
 
     async with KucoinAsyncFuturesClient(
         KUCOIN_API_KEY,
@@ -936,11 +987,14 @@ async def _example():
         # print("OPEN LONG:", await kc.open_short_usdt(sym, 10, leverage=5))
 
         # # посмотреть открытые позиции
-        # print("OPEN POS:", await kc.get_open_positions(sym))
+        print("OPEN POS:", await kc.get_open_positions(sym))
 
         # # попробовать закрыть обе стороны
         # print("CLOSE ALL:", await kc.close_all_positions(sym))
-        print(float(await kc.get_usdt_balance()))
+        # qty = await kc.usdt_to_qty(symbol=sym, usdt_amount=float(await kc.get_usdt_balance())/1.05, side="buy")
+        # print(qty)
+        # print(await kc.open_long(symbol=sym, qty=qty, leverage=1))
+        print(await kc.get_usdt_balance())
 
 
 if __name__ == "__main__":

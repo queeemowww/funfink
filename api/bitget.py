@@ -445,69 +445,63 @@ class BitgetAsyncClient:
     # =============================
     #        OPEN POSITIONS (UI)
     # =============================
+    async def _all_positions(self) -> List[Dict[str, Any]]:
+        """
+        Возвращает "сырые" позиции. Пытаемся v1→v1(v2)→v2, т.к. Bitget частично мигрировал на v2.
+        """
+        # v1 /allPosition
+        try:
+            d = await self._get("/api/mix/v1/position/allPosition", {"productType": self.product_type, "marginCoin": self.margin_coin})
+            rows = d.get("data") or []
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+        # v1 /allPosition-v2
+        try:
+            d = await self._get("/api/mix/v1/position/allPosition-v2", {"productType": self.product_type, "marginCoin": self.margin_coin})
+            rows = d.get("data") or []
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+        # v2 /all-position (productType меняется на "USDT-FUTURES")
+        try:
+            d = await self._get("/api/v2/mix/position/all-position", {"productType": "USDT-FUTURES", "marginCoin": self.margin_coin})
+            rows = d.get("data") or []
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+        return []
+
     async def get_open_positions(
         self,
         *,
         symbol: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
         """
-        Возвращает список открытых позиций в унифицированном виде:
-        {
-            "opened_at": ISO-UTC,
-            "coin": "BTC",
-            "type": "long"|"short",
-            "usdt": "123.45",        # оценка по markPx * size
-            "leverage": "5",
-            "pnl": "3.21"            # unrealized PnL, если есть
-        }
-        Если позиций нет — None.
+        Унифицированный список открытых позиций.
         """
-        if symbol:
-            sym = self.spot_like_symbol_to_umcbl(symbol)
-            items = await self._single_position(sym)
-        else:
-            items = await self._all_positions()
+        items = await self._all_positions()
+        if not len(items):
+            return None
 
-        out: List[Dict[str, Any]] = []
-        for it in items or []:
-            # size/total
-            size = _d(it.get("total") or it.get("holdVol") or it.get("size") or "0")
-            if size == 0:
-                continue
-
-            sym = it.get("symbol", "") or ""
-            coin = sym
-            if sym.endswith("_UMCBL") and sym.endswith("USDT_UMCBL"):
-                coin = sym.replace("USDT_UMCBL", "")
-
-            side = (it.get("holdSide") or "").lower()  # 'long'|'short'
-            pos_type = "long" if side == "long" else "short"
-
-            mark = _d(it.get("markPrice") or it.get("markPx") or it.get("averageOpenPrice") or it.get("avgOpenPrice") or "0")
-            position_value = _d("0")
-            try:
-                position_value = (mark * size) if mark > 0 else _d("0")
-            except Exception:
-                pass
-
-            # плечо
-            lev = it.get("leverage") or it.get("marginLeverage") or ""
-
-            # открытка времени — Bitget может не отдавать createdTime; возьмём uTime или cTime
-            opened_at = _to_iso_ms(it.get("cTime") or it.get("uTime"))
-
-            # uPL
-            pnl = it.get("unrealizedPL") or it.get("upl") or it.get("unrealizedPnl") or "0"
-
-            out.append({
-                "opened_at": opened_at,
-                "symbol": coin,
-                "side": pos_type,
-                "usdt": _trim_decimals(position_value.normalize()) if position_value > 0 else "0",
-                "leverage": str(lev),
-                "pnl": str(pnl),
-            })
+        out: Dict[str, Any] = {"opened_at": None, 'symbol': None, 'side': None, 'usdt': None, 'leverage': None, 'pnl': None}
+        out["opened_at"] = None
+        out['symbol'] = symbol
+        out['side'] = items[0]["holdSide"]
+        out["leverage"] = items[0]["leverage"]
+        out['entry_usdt'] = out["usdt"] = float(items[0].get("averageOpenPrice")) * float(items[0].get("available")) / float(out["leverage"])
+        out['pnl'] = items[0]["unrealizedPL"]
+        out['entry_price'] = items[0]["averageOpenPrice"]
+        out['market_price'] =  items[0]['marketPrice']
         return out or None
+
+
 
     async def get_usdt_balance(self) -> str:
         """
@@ -528,12 +522,15 @@ async def main():
     symbol = "BIOUSDT"  # будет преобразовано в 'BIOUSDT_UMCBL'
     async with BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE) as client:
         # Примеры открытия:
-        # print(await client.open_long_usdt(symbol, 20, leverage=5))
+        # print(await client.open_long_usdt(symbol, 10, leverage=1))
+        # print(await client.open_short(symbol=symbol, qty=300, leverage=5))
         # print(await client.open_short_usdt(symbol, 20, leverage=5))
-
+        
         # Позиции
-        # positions = await client.get_open_positions(symbol=symbol)
-        # print("OPEN POSITIONS:", positions)
+        positions = await client.get_open_positions(symbol=symbol)
+        print("OPEN POSITIONS:", positions)
+        # positions = await client._all_positions()
+        # print(positions)
 
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
@@ -541,7 +538,7 @@ async def main():
         # res = await client.close_all_positions(symbol)
         # print("CLOSE ALL:", res)
 
-        print(float(await client.get_usdt_balance()))
+        # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
 
 if __name__ == "__main__":
     asyncio.run(main())

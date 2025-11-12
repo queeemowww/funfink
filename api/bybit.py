@@ -190,7 +190,7 @@ class BybitAsyncClient:
         lot = ins.get("lotSizeFilter", {}) or {}
         min_qty     = _d(lot.get("minOrderQty", "0"))
         qty_step    = _d(lot.get("qtyStep", "0"))
-        contract_sz = _d(ins.get("contractSize", "1"))
+        self.contract_size = _d(ins.get("contractSize", "1"))
 
         # 3) Нотация (с плечом!)
         usdt = _d(usdt_amount)
@@ -200,7 +200,7 @@ class BybitAsyncClient:
         # 4) Пересчёт в КОНТРАКТЫ
             # contractSize в coin/contract
         coin_qty      = notional / price
-        raw_contracts = coin_qty / (contract_sz if contract_sz > 0 else _d(1))
+        raw_contracts = coin_qty / (self.contract_size if self.contract_size > 0 else _d(1))
 
         # 5) Приведение к шагу/минимуму
         qty = raw_contracts
@@ -480,7 +480,7 @@ class BybitAsyncClient:
         symbol: Optional[str] = None,
         category: Literal["linear","inverse"] = "linear",
         settle_coin: str = "USDT",
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> Dict[str, Any]:
         """
         Возвращает список открытых позиций:
         {
@@ -494,46 +494,18 @@ class BybitAsyncClient:
         }
         Если позиций нет — None.
         """
-        items = await self._get_positions_raw(symbol=symbol, category=category, settle_coin=settle_coin)
-        out: List[Dict[str, Any]] = []
+        it = await self._get_positions_raw(symbol=symbol, category=category, settle_coin=settle_coin)
+        out: Dict[str, Any] = {}
 
-        for it in items:
-            size = _d(it.get("size", "0"))
-            if size == 0:
-                continue
+        out["opened_at"]= it[0].get("last_upd_iso")
+        out["symbol"]= it[0].get("symbol")
+        out["side"] = it[0].get("side").lower()
+        out["leverage"] = it[0].get("leverage", "")
+        out["entry_usdt"] = float(float(it[0].get("avgPrice")) * float(it[0].get("size")) / float(out["leverage"]))
+        out["pnl"] = it[0].get("unrealisedPnl", "0")
+        out["entry_price"] = it[0].get("avgPrice")
+        out["merket_price"] = it[0].get('markPrice')
 
-            sym = it.get("symbol", "") or ""
-            coin = sym
-            for q in ("USDT", "USDC", "USD"):
-                if sym.endswith(q):
-                    coin = sym[:-len(q)]
-                    break
-
-            side = (it.get("side") or "").lower()  # 'buy'/'sell'
-            pos_type = "long" if side == "buy" else "short"
-
-            # берём только createdTime как момент входа
-            updated_ms = it.get("updatedTime")
-
-            last_upd_iso  = self._to_iso_ms(updated_ms)       # полезно для дебага
-
-            # посчитаем позиционную стоимость в USDT (если биржа не дала готовую)
-            position_value = it.get("positionValue")
-            if not position_value:
-                mark = it.get("markPrice") or it.get("avgPrice") or "0"
-                try:
-                    position_value = _trim_decimals((_d(mark) * size))
-                except Exception:
-                    position_value = "0"
-
-            out.append({
-                "opened_at": last_upd_iso,
-                "symbol": coin,
-                "side": pos_type,
-                "usdt": position_value,
-                "leverage": it.get("leverage", ""),
-                "pnl": it.get("unrealisedPnl", "0"),
-            })
 
         return out or None
 
@@ -569,24 +541,27 @@ class BybitAsyncClient:
 
 # ---- Пример использования ----
 async def main():
-    symbol = "CROUSDT"
+    symbol = "BIOUSDT"
     async with BybitAsyncClient(API_KEY, API_SECRET, testnet=False) as client:
+        time_start = time.time()
         # Открыть для примера
-        # print(await client.open_long_usdt(symbol, 10, leverage=5))
+        # print(await client.open_long(symbol=symbol, qty='300', leverage=5))
         # print(await client.open_short_usdt(symbol, 20, leverage=1))
 
         # Посмотреть открытые позиции
-        # positions = await client.get_open_positions(symbol=symbol)
-        # print("OPEN POSITIONS:", positions)
-
+        positions = await client.get_open_positions()
+        print("OPEN POSITIONS:", positions)
+        # print(await client._get_positions_raw())
         # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
-        # res = await client.close_all_positions(symbol)
-        # print("CLOSE ALL:", res)
+        res = await client.close_all_positions(symbol)
+        print("CLOSE ALL:", res)
 
         # Или по отдельности:
         # await client.close_long_all(symbol)
         # await client.close_short_all(symbol)
-        print(float(await client.get_usdt_balance()))
+        # print(float(await client.get_usdt_balance()))
+        # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
+        print(time.time()-time_start)
 
 if __name__ == "__main__":
     asyncio.run(main())

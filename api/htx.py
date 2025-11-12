@@ -69,7 +69,7 @@ class HTXAsyncClient:
         self.base_url   = base_url.rstrip("/")
         self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
         self._retry_lev = int(default_retry_leverage)
-
+        self.contract_size = 1
     # --- context ---
     async def __aenter__(self): 
         return self
@@ -190,7 +190,7 @@ class HTXAsyncClient:
         return f"{s}-USDT"
 
     # --- USDT -> volume (int contracts) ---
-    async def usdt_to_volume(
+    async def usdt_to_qty(
         self,
         symbol: str,
         usdt_amount: float | str,
@@ -219,21 +219,22 @@ class HTXAsyncClient:
             raise RuntimeError(f"Bad price for {code}: {price}")
 
         info = await self._get_contract_info(code)
-        contract_size = _d(str(info.get("contract_size", "1")))
+        self.contract_size = _d(str(info.get("contract_size", "1")))
         min_vol = _d(str(info.get("min_volume")
                          or info.get("min_order_volume")
                          or "1"))
-        if contract_size <= 0:
-            contract_size = _d(1)
+        if self.contract_size <= 0:
+            self.contract_size = _d(1)
 
         usdt = _d(usdt_amount)
+        self.contract_size = int(self.contract_size)
         # кол-во контрактов = usdt / (price * contract_size)
-        contracts = (usdt / (price * contract_size)) if price > 0 else _d(0)
+        contracts = (usdt / (price * self.contract_size)) if price > 0 else _d(0)
 
         vol_int = int(contracts.to_integral_value(rounding=ROUND_FLOOR))
         if vol_int < int(min_vol):
             vol_int = int(min_vol)
-        return str(vol_int)
+        return str(vol_int * self.contract_size) 
 
     # --- leverage ---
     async def set_leverage(self, symbol: str, leverage: int | str) -> Dict[str, Any]:
@@ -281,12 +282,14 @@ class HTXAsyncClient:
             await self.set_leverage(contract_code.replace("-USDT", "USDT"), int(leverage))
 
         order_price_type = "opponent" if order_type == "Market" else "limit"
+        print("volume ", volume)
+        print(int(int(float(volume))), int(float(volume)))
 
         body: Dict[str, Any] = {
             "contract_code": contract_code,
             "direction": direction,    # "buy" или "sell"
             "offset": offset,          # "open" или "close"
-            "volume": int(volume),     # целые контракты
+            "volume": int(int(float(volume))),     # целые контракты
             "order_price_type": order_price_type,
         }
 
@@ -367,6 +370,62 @@ class HTXAsyncClient:
 
         return total_avail or None
 
+    async def open_long(
+        
+        self,
+        symbol: str,
+        qty: float | str,
+        *,
+        order_type: Literal["Market","Limit"] = "Market",
+        price: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+        client_order_id: Optional[str] = None,
+    ):
+        """
+        Открыть шорт на примерно usdt_amount долларов.
+        """
+        code = self._to_contract_code(symbol)
+        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
+
+        return await self._place_order(
+            contract_code=code,
+            direction="buy",
+            offset="open",
+            volume=str(int(float(qty) / float(self.contract_size))),
+            order_type=order_type,
+            price=price,
+            leverage=leverage,
+            client_order_id=client_order_id,
+        )
+    
+    async def open_short(
+        self,
+        symbol: str,
+        qty: float | str,
+        *,
+        order_type: Literal["Market","Limit"] = "Market",
+        price: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+        client_order_id: Optional[str] = None,
+    ):
+        """
+        Открыть шорт на примерно usdt_amount долларов.
+        """
+        code = self._to_contract_code(symbol)
+        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
+
+        return await self._place_order(
+            contract_code=code,
+            direction="sell",
+            offset="open",
+            volume=str(int(float(qty) / float(self.contract_size))),
+            order_type=order_type,
+            price=price,
+            leverage=leverage,
+            client_order_id=client_order_id,
+        )
+
+
     # --- high-level: OPEN позиции по USDT-сумме ---
     async def open_long_usdt(
         self,
@@ -381,8 +440,9 @@ class HTXAsyncClient:
         """
         Открыть лонг на примерно usdt_amount долларов.
         """
+        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
         code = self._to_contract_code(symbol)
-        vol  = await self.usdt_to_volume(symbol, usdt_amount, side="buy")
+        vol  = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
 
         return await self._place_order(
             contract_code=code,
@@ -409,7 +469,7 @@ class HTXAsyncClient:
         Открыть шорт на примерно usdt_amount долларов.
         """
         code = self._to_contract_code(symbol)
-        vol  = await self.usdt_to_volume(symbol, usdt_amount, side="sell")
+        vol  = await self.usdt_to_qty(symbol, usdt_amount, side="sell")
 
         return await self._place_order(
             contract_code=code,
@@ -503,7 +563,9 @@ class HTXAsyncClient:
         results: Dict[str, Any] = {}
 
         # лонг → закрываем селлом
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
         long_avail = await self._get_available_position_volume(symbol, "buy")
+        print("long avail", long_avail)
         if long_avail:
             try:
                 results["long_closed"] = await self._place_order(
@@ -564,82 +626,93 @@ class HTXAsyncClient:
         except Exception:
             return None
 
+    async def _all_positions(self) -> List[Dict[str, Any]]:
+        """
+        Возвращает «сырые» открытые позиции HTX (USDT-маржинальные перпы).
+        Пытаемся несколькими эндпоинтами в порядке:
+          1) v1 isolated: /linear-swap-api/v1/swap_position_info (без параметров)
+          2) v1 isolated: /linear-swap-api/v1/swap_position_info (margin_account=USDT)
+          3) v1 cross:    /linear-swap-api/v1/swap_cross_position_info (margin_account=USDT)
+          4) v3 unified:  /linear-swap-api/v3/unified_account_position  (если доступно)
+        Возвращает список dict'ов позиций (как есть из биржи) или [].
+        """
+        # 1) v1 isolated — без параметров
+        try:
+            d = await self._private_post("/linear-swap-api/v1/swap_position_info", body={})
+            rows = d.get("data") or []
+            if isinstance(rows, list) and rows:
+                return rows
+        except Exception:
+            pass
+
+        # 2) v1 isolated — явно задаём margin_account=USDT
+        try:
+            d = await self._private_post(
+                "/linear-swap-api/v1/swap_position_info",
+                body={"margin_account": "USDT"},
+            )
+            rows = d.get("data") or []
+            if isinstance(rows, list) and rows:
+                return rows
+        except Exception:
+            pass
+
+        # 3) v1 cross — если вдруг позиции в кроссе
+        try:
+            d = await self._private_post(
+                "/linear-swap-api/v1/swap_cross_position_info",
+                body={"margin_account": "USDT"},
+            )
+            rows = d.get("data") or []
+            if isinstance(rows, list) and rows:
+                return rows
+        except Exception:
+            pass
+
+        # 4) v3 unified — если доступен у аккаунта/регионе
+        #    NB: используем GET с подписью в query (как в get_usdt_balance для v3).
+        try:
+            path = "/linear-swap-api/v3/unified_account_position"
+            sp = self._signed_params("GET", path, {})
+            r = await self._client.get(path, params=sp)
+            r.raise_for_status()
+            d = r.json()
+            code = str(d.get("code", ""))
+            if code in ("0", "200"):
+                rows = d.get("data") or []
+                # На некоторых аккаунтах data — dict с ключом "positions"
+                if isinstance(rows, dict):
+                    rows = rows.get("positions") or []
+                if isinstance(rows, list) and rows:
+                    return rows
+        except Exception:
+            pass
+
+        return []
+
     async def get_open_positions(
         self,
         symbol: Optional[str] = None
     ) -> Optional[List[Dict[str, Any]]]:
-        """
-        [
-          {
-            "opened_at": ISO-UTC string (фолбэк = ts ответа биржи),
-            "coin": "BTC",
-            "type": "long" | "short",
-            "usdt": "<оценка позиции в USDT>",
-            "leverage": "<int>",
-            "pnl": "<unrealized>"
-          },
-          ...
-        ] or None
-        """
-        body: Dict[str, Any] = {}
-        if symbol:
-            body["contract_code"] = self._to_contract_code(symbol)
 
-        data = await self._private_post(
-            "/linear-swap-api/v1/swap_position_info",
-            body=body
-        )
-
-        items = data.get("data") or []
-        if not items:
+        """
+        Унифицированный список открытых позиций.
+        """
+        items = await self._all_positions()
+        if not len(items):
             return None
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side = 'buy')
 
-        # ts = "Time of Respond Generation, Unit: Millisecond"
-        # это есть в доке, а поля времени открытия позиции в самих элементах нет. :contentReference[oaicite:1]{index=1}
-        resp_ts_ms = data.get("ts")
-
-        out: List[Dict[str, Any]] = []
-        for p in items:
-            vol_dec = _d(str(p.get("volume", "0")))
-            if vol_dec <= 0:
-                continue
-
-            code = (p.get("contract_code") or "").upper()
-            coin = code.replace("-USDT", "").replace("-USD", "")
-
-            direction = (p.get("direction") or "").lower()  # buy|sell
-            pos_type = "long" if direction == "buy" else "short"
-
-            last_price = _d(str(p.get("last_price") or "0"))
-            contract_size = _d(str(p.get("contract_size") or "1"))
-            position_value = (
-                last_price * contract_size * vol_dec
-                if last_price > 0 else _d(0)
-            )
-
-            # пытаемся угадать время открытия
-            # биржа не даёт его в swap_position_info вообще
-            # поэтому fallback = timestamp ответа
-            opened_raw = (
-                p.get("created_at")
-                or p.get("create_time")
-                or p.get("ts")
-                or p.get("open_time")
-                or resp_ts_ms          # <- НОВОЕ
-            )
-            opened_iso = self._to_iso_ms(opened_raw)
-
-            out.append({
-                "opened_at": opened_iso,
-                "symbol": coin,
-                "side": pos_type,
-                "usdt": format(position_value, "f"),
-                "leverage": str(p.get("lever_rate") or ""),
-                "pnl": str(p.get("profit_unreal") or "0"),
-            })
-
+        out: Dict[str, Any] = {"opened_at": None, 'symbol': None, 'side': None, 'usdt': None, 'leverage': None, 'pnl': None}
+        out["opened_at"] = None
+        out['symbol'] = symbol
+        out['side'] = "short" if items[0]["direction"] == 'sell' else "long"
+        out["leverage"] = items[0]["lever_rate"]
+        out['entry_usdt'] = float(items[0].get("cost_open")) * float(items[0].get("volume") * self.contract_size /  float(out["leverage"]))
+        out['pnl'] = items[0]["profit_unreal"]
+        out['entry_price'] = items[0]['cost_open']
+        out['market_price'] = items[0]['last_price']
         return out or None
-
 
     async def get_usdt_balance(self) -> str:
         """
@@ -715,14 +788,18 @@ class HTXAsyncClient:
 async def _example():
     symbol = "BIOUSDT"
     async with HTXAsyncClient(HTX_API_KEY, HTX_API_SECRET) as htx:
-        # print("OPEN LONG:", await htx.open_long_usdt(symbol, 10, leverage=5))
-        # print("OPEN SHORT:", await htx.open_short_usdt(symbol, 10, leverage=5))
-
+        # qty = await htx.usdt_to_qty(symbol=symbol, usdt_amount=30, side="sell")
+        # print(qty)
+        # print("OPEN LONG:", await htx.open_long(symbol = symbol, qty = 10, leverage=5, order_type="Market"))
+        # print(await htx.usdt_to_qty(symbol=symbol, usdt_amount=50, side="buy"))
+        # print("OPEN SHORT:", await htx.open_long(symbol, 10, leverage=1))
+        # await htx.usdt_to_qty(symbol=symbol, usdt_amount=90, side='buy')
         # print("POSITIONS:", await htx.get_open_positions(symbol))
+        # print("POSITIONS:", await htx._all_positions())
 
-        # # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        # print("CLOSE ALL:", await htx.close_all_positions(symbol))
-        print(float(await htx.get_usdt_balance()))
+        # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
+        print("CLOSE ALL:", await htx.close_all_positions(symbol))
+        # print(float(await htx.get_usdt_balance()))
 
 
 if __name__ == "__main__":

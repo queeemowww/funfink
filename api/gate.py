@@ -154,19 +154,22 @@ class GateAsyncFuturesClient:
         return arr[0] if isinstance(arr, list) and arr else {}
 
     # ------------ конвертация USDT -> size ------------
-    async def usdt_to_size(self, contract: str, usdt_amount: float | str, *, side: Literal["buy", "sell"]) -> int:
+    async def usdt_to_qty(self, symbol: str, usdt_amount: float | str, *, side: Literal["buy", "sell"]) -> int:
         """
         size = floor( USDT / (quanto_multiplier * price) )
         где price — лучшая сторона (ask/bid) либо last/mark.
         size целочисленный; учитываем минимальный size (order_size_min).
         """
-        t = await self.get_ticker(contract)
+        symbol = re.split("USDT", symbol)[0]
+        symbol = symbol + "_USDT"
+
+        t = await self.get_ticker(symbol)
         px_str = (t.get("ask") if side == "buy" else t.get("bid")) or t.get("last") or t.get("mark_price") or "0"
         price = _d(px_str)
         if price <= 0:
-            raise RuntimeError(f"Bad price for {contract}: {price}")
+            raise RuntimeError(f"Bad price for {symbol}: {price}")
 
-        c = await self.get_contract(contract)
+        c = await self.get_contract(symbol)
         mult = _d(c.get("quanto_multiplier", "0"))
         if mult <= 0:
             mult = _d("1")
@@ -189,7 +192,7 @@ class GateAsyncFuturesClient:
         )
 
     # ------------ ордера ------------
-    async def _create_order(self, *, contract: str, size: int,
+    async def _create_order(self, *, contract: str, size: str,
                             price: Optional[str], tif: Literal["gtc","ioc"]="ioc",
                             reduce_only: bool=False, close: Optional[bool]=None,
                             text: Optional[str]=None) -> Dict[str, Any]:
@@ -201,6 +204,7 @@ class GateAsyncFuturesClient:
         - Шорт:  size < 0
         - single-mode close-all: close=true, size=0, price="0"
         """
+        size = int(size)
         body: Dict[str, Any] = {
             "contract": contract,
             "size": int(size),
@@ -219,25 +223,21 @@ class GateAsyncFuturesClient:
 
         return await self._request("POST", f"/futures/{self.settle}/orders", body=body)
 
-    async def open_long(self, contract: str, size: int, *, price: Optional[str]=None,
+    async def open_long(self, symbol: str, qty, *, price: Optional[str]=None,
                         tif: Literal["gtc","ioc"]="ioc", leverage: Optional[int|str]=None,
                         client_tag: Optional[str]=None) -> Dict[str, Any]:
         if leverage:
-            await self.set_leverage(contract, leverage)
-        return await self._create_order(contract=contract, size=abs(int(size)), price=price, tif=tif, text=client_tag)
+            await self.set_leverage(symbol, leverage)
+        return await self._create_order(contract=symbol, size=abs(int(float(qty))), price=price, tif=tif, text=client_tag)
 
-    async def open_short(self, contract: str, size: int, *, price: Optional[str]=None,
+    async def open_short(self, symbol: str, qty, *, price: Optional[str]=None,
                          tif: Literal["gtc","ioc"]="ioc", leverage: Optional[int|str]=None,
                          client_tag: Optional[str]=None) -> Dict[str, Any]:
         if leverage:
-            await self.set_leverage(contract, leverage)
-        return await self._create_order(contract=contract, size=-abs(int(size)), price=price, tif=tif, text=client_tag)
+            await self.set_leverage(symbol, leverage)
+        return await self._create_order(contract=symbol, size=-abs(int(float(qty))), price=price, tif=tif, text=client_tag)
 
-    # ------------ позиции ------------
-    async def _list_positions_raw(self) -> List[Dict[str, Any]]:
-        # GET /futures/{settle}/positions
-        arr = await self._request("GET", f"/futures/{self.settle}/positions")
-        return arr if isinstance(arr, list) else []
+    # ------------ позиции -----------
 
     async def _get_position_sizes(self, contract: str) -> Tuple[int, int]:
         """
@@ -255,75 +255,77 @@ class GateAsyncFuturesClient:
             elif sz < 0:
                 short_sz = -sz
         return long_sz, short_sz
+    
+    async def _all_positions(
+        self,
+        *,
+        include_zero: bool = False,
+        contract: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Возвращает "сырые" позиции аккаунта (Gate Futures USDT).
+        - include_zero=False: по умолчанию отфильтровывает нулевые позиции (size=0)
+        - contract: опциональный фильтр по контракту (формат Gate: BASE_USDT, напр. 'API3_USDT')
+        """
+        # Приведём символ, если передан как 'API3USDT' → 'API3_USDT'
+        q_contract = None
+        if contract:
+            if "_USDT" not in contract and "USDT" in contract:
+                base = contract.split("USDT")[0]
+                q_contract = f"{base}_USDT"
+            else:
+                q_contract = contract
 
-    async def get_open_positions(self, *, contract: Optional[str]=None) -> Optional[List[Dict[str, Any]]]:
-        items = await self._list_positions_raw()
-        out: List[Dict[str, Any]] = []
-
-        for p in items:
-            # фильтрация по нужному контракту
-            if contract and p.get("contract") != contract:
-                continue
-
-            # размер позиции
-            sz_raw = p.get("size", 0) or 0
-            sz = int(sz_raw)
-            if sz == 0:
-                continue
-
-            pos_type = "long" if sz > 0 else "short"
-
-            # ---------- извлекаем время открытия ----------
-            # Gate.io обычно отдает время как:
-            #   "create_time": "1729853073.123"   (секунды, строка)
-            #   "create_time_ms": "1729853073123" (миллисек)
-            # fallback: "time", "update_time"
-            ct = (
-                p.get("create_time_ms")
-                or p.get("create_time")
-                or p.get("time")
-                or p.get("update_time")
+        # 1) Основной запрос
+        try:
+            arr = await self._request(
+                "GET",
+                f"/futures/{self.settle}/positions",
+                query={"contract": q_contract} if q_contract else None,
             )
+        except Exception:
+            # 2) Фолбэк: ещё раз без фильтра по контракту
+            arr = await self._request("GET", f"/futures/{self.settle}/positions")
 
-            opened_at_ms: Optional[int] = None
-            opened_at_iso: Optional[str] = None
+        # Нормализуем ответ к списку
+        items: List[Dict[str, Any]] = arr if isinstance(arr, list) else ([arr] if isinstance(arr, dict) else [])
+        if not items:
+            return []
 
-            if ct is not None:
-                # ct может быть строкой "1729853073.123", или "1729853073123", или числом
-                # нормализуем в миллисекунды UTC
+        # Фильтрация нулевых позиций при include_zero=False
+        out: List[Dict[str, Any]] = []
+        for p in items:
+            try:
+                sz = int(p.get("size", 0) or 0)
+            except Exception:
+                # На всякий случай, если биржа вернула строку с дробью
                 try:
-                    ct_float = float(ct)
-                    if ct_float < 10**12:
-                        # это секунды -> в мс
-                        opened_at_ms = int(ct_float * 1000.0)
-                    else:
-                        # уже миллисекунды
-                        opened_at_ms = int(ct_float)
-                except (TypeError, ValueError):
-                    opened_at_ms = None
+                    sz = int(Decimal(str(p.get("size", 0) or 0)).to_integral_value(rounding=ROUND_DOWN))
+                except Exception:
+                    sz = 0
 
-                if opened_at_ms is not None:
-                    # UTC ISO
-                    opened_at_iso = (
-                        time.strftime(
-                            "%Y-%m-%dT%H:%M:%S",
-                            time.gmtime(opened_at_ms / 1000.0)
-                        )
-                        + "+00:00"
-                    )
+            if not include_zero and sz == 0:
+                continue
 
-                    # ---------- время в МСК (UTC+3) ----------
-                    # сдвигаем UNIX-время на +3 часа
+            # Контракт оставляем как есть (формат BASE_USDT)
+            out.append(p)
 
-            out.append({
-                "opened_at": opened_at_iso,
-                "symbol": p.get("contract"),
-                "side": pos_type,
-                "usdt": p.get("value", "0"),
-                "leverage": p.get("leverage", ""),
-                "pnl": p.get("unrealised_pnl", "0")
-            })
+        return out
 
+
+    async def get_open_positions(self, *, symbol: Optional[str]=None) -> Optional[List[Dict[str, Any]]]:
+        items = await self._all_positions()
+        out: Dict[str, Any] = {"opened_at": None, 'symbol': None, 'side': None, 'usdt': None, 'leverage': None, 'pnl': None}
+        if not len(items):
+            return None
+        
+        out["opened_at"] = None
+        out['symbol'] = symbol
+        out['side'] = re.findall(r'(?i)(?<![A-Za-z])(long|short)(?![A-Za-z])', items[0]["mode"])[0] if len(re.findall(r'(?i)(?<![A-Za-z])(long|short)(?![A-Za-z])', items[0]["mode"])) else None
+        out["leverage"] = items[0]["leverage"]
+        out["entry_usdt"] = float(items[0].get("entry_price")) * float(items[0].get("size") /  float(out["leverage"]))
+        out['pnl'] = items[0]["unrealised_pnl"]
+        out['entry_price'] = items[0]["entry_price"]
         return out or None
 
 
@@ -387,14 +389,14 @@ class GateAsyncFuturesClient:
                               leverage: Optional[int|str]=None, client_tag: Optional[str]=None) -> Dict[str, Any]:
         symbol = re.split("USDT", symbol)[0]
         symbol = symbol + "_USDT"
-        size = await self.usdt_to_size(symbol, usdt_amount, side="buy")
+        size = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
         return await self.open_long(symbol, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
 
     async def open_short_usdt(self, symbol: str, usdt_amount: float | str, *,
                                leverage: Optional[int|str]=None, client_tag: Optional[str]=None) -> Dict[str, Any]:
         symbol = re.split("USDT", symbol)[0]
         symbol = symbol + "_USDT"
-        size = await self.usdt_to_size(symbol, usdt_amount, side="sell")
+        size = await self.usdt_to_qty(symbol, usdt_amount, side="sell")
         return await self.open_short(symbol, size, price=None, tif="ioc", leverage=leverage, client_tag=client_tag)
 
     async def get_usdt_balance(self) -> str:
@@ -409,7 +411,7 @@ class GateAsyncFuturesClient:
 
 # ---- пример использования ----
 async def main():
-    contract = "SIGNUSDT"  # формат Gate: BASE_QUOTE
+    contract = "API3USDT"  # формат Gate: BASE_QUOTE
     contract = re.split("USDT", contract)[0]
     contract = contract + "_USDT"
     print(contract)
@@ -421,17 +423,18 @@ async def main():
         # await gate.set_leverage(contract, 10)
 
         # # # открыть позиции
-        # print(await gate.open_long_usdt(contract, 10, leverage=10))
+        # print(await gate.open_long(symbol=contract, qty=10, leverage=10))
         # await gate.open_short_usdt(contract, 5, leverage=5)
 
         # получить позиции
-        # positions = await gate.get_open_positions(contract=contract)
-        # print("OPEN POS:", positions)
+        positions = await gate.get_open_positions(symbol="BIOUSDT")
+        print("OPEN POS:", positions)
 
         # # закрыть всё (корректно работает и в dual, и в single)
         # res = await gate.close_all_positions(contract)
         # print("CLOSE ALL:", res)
-        print(float(await gate.get_usdt_balance()))
+        # print((await gate._all_positions()))
+        # print((await gate.usdt_to_qty(symbol="API3USDT", usdt_amount=60, side="buy")))
 
 if __name__ == "__main__":
     asyncio.run(main())

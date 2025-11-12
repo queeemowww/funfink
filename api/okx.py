@@ -267,13 +267,14 @@ class OKXAsyncClient:
         return await self._post_private("/api/v5/account/set-leverage", body)
 
     # ------------------ конвертация USDT -> sz (контракты) ------------------
-    async def usdt_to_sz(
+    async def usdt_to_qty(
         self,
-        inst_id: str,
+        symbol,
         usdt_amount: float | str,
         *,
         side: Literal["buy", "sell"],  # buy -> askPx, sell -> bidPx
     ) -> str:
+        inst_id = to_okx_inst_id(symbol)
         t = await self._get_ticker(inst_id)
         px_str = t.get("askPx") if side == "buy" else t.get("bidPx")
         if not px_str or _d(px_str) == 0:
@@ -283,13 +284,13 @@ class OKXAsyncClient:
             raise RuntimeError(f"Bad price for {inst_id}: {price}")
 
         ins = await self._get_instrument(inst_id)
-        ct_val = _d(ins.get("ctVal", "1"))
+        self.contract_size = _d(ins.get("ctVal", "1"))
         lot_sz = _d(ins.get("lotSz", "1"))
         min_sz = _d(ins.get("minSz", "1"))
 
         usdt = _d(usdt_amount)
         coin_qty = usdt / price
-        raw_sz = coin_qty / (ct_val if ct_val > 0 else _d(1))
+        raw_sz = coin_qty / (self.contract_size if self.contract_size > 0 else _d(1))
 
         sz = raw_sz
         if lot_sz > 0:
@@ -297,7 +298,7 @@ class OKXAsyncClient:
         if sz < min_sz:
             sz = min_sz
 
-        return _fmt_decimal(sz)
+        return str(sz * self.contract_size)
 
     # ------------------ позиции: поиск фактической ------------------
     async def _find_position(
@@ -379,8 +380,8 @@ class OKXAsyncClient:
     # ------------------ низкоуровневые ордера (sz уже посчитан) ------------------
     async def open_long(
         self,
-        inst_id: str,
-        sz: str,
+        symbol: str,
+        qty: str,
         *,
         ord_type: Literal["market", "limit"] = "market",
         px: Optional[str] = None,
@@ -391,6 +392,8 @@ class OKXAsyncClient:
         tag: Optional[str] = None,
         leverage: Optional[int | str] = None,
     ) -> Dict[str, Any]:
+        inst_id = to_okx_inst_id(symbol)
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
         if leverage is not None:
             mode = await self._get_pos_mode()
             eff_pos_side = pos_side if (mode == "long_short_mode") else None
@@ -401,15 +404,15 @@ class OKXAsyncClient:
         if cl_ord_id is None:
             cl_ord_id = _safe_clordid("oL")
         body = await self._build_order_body(
-            inst_id=inst_id, side="buy", ord_type=ord_type, sz=sz, td_mode=td_mode,
+            inst_id=inst_id, side="buy", ord_type=ord_type, sz=str(int(float(qty)/ float(self.contract_size))), td_mode=td_mode,
             px=px, reduce_only=reduce_only, pos_side=pos_side, cl_ord_id=cl_ord_id, tag=tag,
         )
         return await self._post_order_with_retry(body)
 
     async def open_short(
         self,
-        inst_id: str,
-        sz: str,
+        symbol: str,
+        qty: str,
         *,
         ord_type: Literal["market", "limit"] = "market",
         px: Optional[str] = None,
@@ -420,6 +423,8 @@ class OKXAsyncClient:
         tag: Optional[str] = None,
         leverage: Optional[int | str] = None,
     ) -> Dict[str, Any]:
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="sell")
+        inst_id = to_okx_inst_id(symbol)
         if leverage is not None:
             mode = await self._get_pos_mode()
             eff_pos_side = pos_side if (mode == "long_short_mode") else None
@@ -430,7 +435,7 @@ class OKXAsyncClient:
         if cl_ord_id is None:
             cl_ord_id = _safe_clordid("oS")
         body = await self._build_order_body(
-            inst_id=inst_id, side="sell", ord_type=ord_type, sz=sz, td_mode=td_mode,
+            inst_id=inst_id, side="sell", ord_type=ord_type, sz=str(int(float(qty) / float(self.contract_size))), td_mode=td_mode,
             px=px, reduce_only=reduce_only, pos_side=pos_side, cl_ord_id=cl_ord_id, tag=tag,
         )
         return await self._post_order_with_retry(body)
@@ -603,10 +608,10 @@ class OKXAsyncClient:
         Автоконвертация USDT -> контрактный размер (sz) с учётом lotSz/minSz.
         """
         inst_id = to_okx_inst_id(symbol)
-        sz = await self.usdt_to_sz(inst_id, usdt_amount, side="buy")
+        sz = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
         return await self.open_long(
-            inst_id=inst_id,
-            sz=sz,
+            symbol=symbol,
+            qty=sz,
             ord_type=ord_type,
             px=px,
             td_mode=td_mode,
@@ -634,10 +639,10 @@ class OKXAsyncClient:
         Автоконвертация USDT -> контрактный размер (sz) с учётом lotSz/minSz.
         """
         inst_id = to_okx_inst_id(symbol)
-        sz = await self.usdt_to_sz(inst_id, usdt_amount, side="sell")
+        sz = await self.usdt_to_qty(symbol, usdt_amount, side="sell")
         return await self.open_short(
-            inst_id=inst_id,
-            sz=sz,
+            symbol=symbol,
+            qty=sz,
             ord_type=ord_type,
             px=px,
             td_mode=td_mode,
@@ -668,6 +673,7 @@ class OKXAsyncClient:
 
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
         items = raw.get("data") or []
+        print(items)
         result: List[dict] = []
 
         if not items:
@@ -701,6 +707,8 @@ class OKXAsyncClient:
 
                 # PnL
                 pnl = p.get("upl")
+                avg_px = p.get("avgPx")
+                mark_px = float(p.get("markPx"))
                 if pnl is None or pnl == "":
                     if inst_id not in ticker_cache:
                         ticker_cache[inst_id] = await self._get_ticker(inst_id)
@@ -711,11 +719,11 @@ class OKXAsyncClient:
                     if inst_id not in ins_cache:
                         ins_cache[inst_id] = await self._get_instrument(inst_id)
                     ins = ins_cache[inst_id]
-                    ct_val = _d(ins.get("ctVal", "1"))
+                    contract_size = _d(ins.get("ctVal", "1"))
 
                     contracts = _d(pos_str).copy_abs()
                     sgn = _d(1) if side == "long" else _d(-1)
-                    pnl_d = (last_px - avg_px) * contracts * ct_val * sgn
+                    pnl_d = (last_px - avg_px) * contracts * contract_size * sgn
                     pnl = _fmt_decimal(pnl_d)
                 else:
                     pnl = _fmt_decimal(_d(pnl))
@@ -730,25 +738,27 @@ class OKXAsyncClient:
                     if inst_id not in ins_cache:
                         ins_cache[inst_id] = await self._get_instrument(inst_id)
                     ins = ins_cache[inst_id]
-                    ct_val = _d(ins.get("ctVal", "1"))
+                    contract_size = _d(ins.get("ctVal", "1"))
                     contracts = _d(pos_str).copy_abs()
-                    usdt_val = contracts * ct_val * last_px
+                    usdt_val = contracts * contract_size * last_px
                     usdt_str = _fmt_decimal(usdt_val)
                 else:
                     usdt_str = _fmt_decimal(_d(notional_usd))
-
+                print(avg_px)
                 result.append({
                     "opened_at": opened_at,
                     "symbol": coin,
                     "side": side,
-                    "usdt": usdt_str,
-                    "leverage": str(leverage),
                     "pnl": pnl,
+                    "leverage": str(leverage),
+                    "entry_usdt": ((float(usdt_str) - float(pnl)) / float(leverage)),
+                    "entry_price": avg_px, 
+                    "market_price": mark_px
                 })
             except Exception:
                 continue
 
-        return result or None
+        return result[0] or None
     
         # ------------------ баланс аккаунта (USDT) ------------------
     async def get_usdt_balance(self) -> str:
@@ -802,7 +812,10 @@ class OKXAsyncClient:
 async def main():
     client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
     try:
-        symbol = "SIGNUSDT"  # или 'BIO-USDT-SWAP'
+        symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
+        # print(await client.open_long(symbol="BIOUSDT", qty="10", leverage=5))
+
+        # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
         # открыть сделки (пример):
         # r = await client.open_long_usdt(symbol, 50, leverage=1)
@@ -810,15 +823,16 @@ async def main():
         # r = await client.open_short_usdt(symbol, 50, leverage=1)
         # print("OPEN SHORT:", r)
 
-        # pos = await client.get_open_positions()
-        # print("OPEN POSITIONS:", pos)
+        pos = await client.get_open_positions(symbol=symbol)
+        print("OPEN POSITIONS:", pos)
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
-        # r = await client.close_all_positions(symbol)
+        # r = await client.close_all_positions("BIOUSDT")
         # print("CLOSE ALL SIDES:", r)
 
-        print(float(await client.get_usdt_balance()))
+        # print(float(await client.get_usdt_balance()))
+        # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=50, side="buy"))
 
     finally:
         await client.close()

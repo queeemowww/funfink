@@ -1,0 +1,13 @@
+old_diff = (active_logs.iloc[i]['long_price']-active_logs.iloc[i]['short_price'])/(active_logs.iloc[i]['long_price'])*100
+long = 5
+short = 5
+
+long = 6
+short = 6.1
+
+5-5/5 = 0
+(6-6,1)/6
+
+
+current_diff = (long_price - short_price)/long_price*100
+
