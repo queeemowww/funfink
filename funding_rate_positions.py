@@ -1792,12 +1792,7 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        print(self.get_last_price_okx("SOON-USDT"))
-        print(self.get_last_price_htx("SOON-USDT"))
-        print(self.get_last_price_bybit("IPUSDT"))
-        print(self.get_last_price_bitget("IPUSDT"))
-
-        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":
