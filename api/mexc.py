@@ -10,11 +10,12 @@ import urllib.parse
 from typing import Optional, Literal, Dict, Any, List, Tuple
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
-
+import ssl
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
+SSL_CTX = ssl.create_default_context()
 MEXC_API_KEY    = os.getenv("MEXC_API_KEY", "")
 MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "")
 
@@ -105,7 +106,7 @@ class MEXCAsyncFuturesClient:
 
         self.default_leverage = str(default_leverage)
 
-        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
 
     # --- context manager ---
     async def __aenter__(self):

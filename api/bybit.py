@@ -10,7 +10,7 @@ import hashlib
 import asyncio
 import urllib.parse
 from typing import Optional, Literal, Dict, Any, List
-
+import ssl
 import httpx
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
+SSL_CTX = ssl.create_default_context()
 API_KEY    = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
@@ -60,7 +61,7 @@ class BybitAsyncClient:
         self.api_secret  = api_secret.encode("utf-8")
         self.recv_window = str(recv_window_ms)
         self.base_url    = "https://api.bybit.com" if not testnet else "https://api-testnet.bybit.com"
-        self._client     = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client     = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
 
     # --- контекстный менеджер ---
     async def __aenter__(self):
@@ -549,17 +550,17 @@ async def main():
         # print(await client.open_short_usdt(symbol, 20, leverage=1))
 
         # Посмотреть открытые позиции
-        positions = await client.get_open_positions()
-        print("OPEN POSITIONS:", positions)
+        # positions = await client.get_open_positions()
+        # print("OPEN POSITIONS:", positions)
         # print(await client._get_positions_raw())
         # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
-        res = await client.close_all_positions(symbol)
-        print("CLOSE ALL:", res)
+        # res = await client.close_all_positions(symbol)
+        # print("CLOSE ALL:", res)
 
         # Или по отдельности:
         # await client.close_long_all(symbol)
         # await client.close_short_all(symbol)
-        # print(float(await client.get_usdt_balance()))
+        print(float(await client.get_usdt_balance()))
         # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
         print(time.time()-time_start)
 

@@ -27,7 +27,10 @@ from pairs_parse import Parsing
 import os
 from pathlib import Path
 import sys
+import ssl
 
+SSL_CTX = ssl.create_default_context()
+SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 url = "https://openrouter.ai/api/v1/chat/completions"
@@ -442,20 +445,32 @@ class Logic():
                 return 100
     
 
-    def get_last_price_htx(self,symbol: str) -> float:
+    def get_last_price_htx(self, symbol: str) -> float:
         flag = 0
         while flag < 5:
             try:
-                # HTX (Huobi) linear-swap. Берём merged (в нём close = last)
                 url = "https://api.hbdm.com/linear-swap-ex/market/detail/merged"
-                r = requests.get(url, params={"contract_code": symbol}, timeout=10)
+                try:
+                    r = requests.get(
+                        url,
+                        params={"contract_code": symbol},
+                        timeout=10,
+                        verify=SYSTEM_CA   # verify по умолчанию = True → системный CA
+                    )
+                except:
+                    r = requests.get(
+                        url,
+                        params={"contract_code": symbol},
+                        timeout=10   # verify по умолчанию = True → системный CA
+                    )
                 r.raise_for_status()
                 flag = 5
                 return float(r.json()["tick"]["close"])
             except Exception as e:
                 print(f"Ошибка получения цены с htx ({symbol}): {e}")
-                flag+=1
+                flag += 1
                 return 100
+
 
     def get_last_price_mexc(self,symbol: str) -> float:
         # MEXC futures/contract API
@@ -650,7 +665,7 @@ class Logic():
         uni = self._normalize_universal(symbol)
         sym = self._to_exchange_symbol(ex, uni)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=SSL_CTX) as client:
             try:
                 # ---- Bybit ----
                 if ex == 'bybit':
@@ -1009,7 +1024,7 @@ class Logic():
 
         rows = df_pairs[["exchange", "symbol","symbol_n" ,*([c for c in ("linear_inverse", "settle_asset", "margin_asset") if c in df_pairs.columns])]].to_dict("records")
 
-        async with httpx.AsyncClient(timeout=self.TIMEOUT, headers=self.HEADERS) as client:
+        async with httpx.AsyncClient(timeout=self.TIMEOUT, headers=self.HEADERS, verify=SSL_CTX) as client:
             sem = asyncio.Semaphore(self.MAX_CONCURRENCY)
             async def _task(r):
                 async with sem:
@@ -1777,7 +1792,8 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        # print(self.get_last_price_okx("RESOLV-USDT"))
+        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":

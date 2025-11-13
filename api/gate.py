@@ -9,12 +9,13 @@ import hashlib
 import asyncio
 from typing import Optional, Literal, Dict, Any, List, Tuple
 from decimal import Decimal, ROUND_DOWN
-
+import ssl
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
+SSL_CTX = ssl.create_default_context()
 GATE_API_KEY    = os.getenv("GATE_API_KEY", "")
 GATE_API_SECRET = os.getenv("GATE_API_SECRET", "")
 
@@ -58,7 +59,7 @@ class GateAsyncFuturesClient:
         self.api_secret = api_secret.encode("utf-8")
         self.base_host  = "https://fx-api-testnet.gateio.ws" if testnet else "https://fx-api.gateio.ws"
         self.base_path  = "/api/v4"
-        self._client    = httpx.AsyncClient(base_url=self.base_host, timeout=timeout, headers={
+        self._client    = httpx.AsyncClient(base_url=self.base_host, timeout=timeout,verify=SSL_CTX, headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
         })

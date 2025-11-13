@@ -12,7 +12,7 @@ import random
 import string
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Literal, Dict, Any, List, Tuple
-
+import ssl
 import httpx
 from dotenv import load_dotenv
 # --- в начале файла рядом с импортами ---
@@ -20,6 +20,8 @@ import math
 import random as _random
 from httpx import ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError, HTTPStatusError
 
+
+SSL_CTX = ssl.create_default_context()
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_TRIES = 4  # 1 + 3 повтора
 BASE_BACKOFF = 0.35  # сек, потом *2, + небольшие джиттеры
@@ -101,6 +103,7 @@ class OKXAsyncClient:
             headers=headers,
             limits=limits,
             http2=True,
+            verify=SSL_CTX
         )
 
     async def close(self):
@@ -823,15 +826,15 @@ async def main():
         # r = await client.open_short_usdt(symbol, 50, leverage=1)
         # print("OPEN SHORT:", r)
 
-        pos = await client.get_open_positions(symbol=symbol)
-        print("OPEN POSITIONS:", pos)
+        # pos = await client.get_open_positions(symbol=symbol)
+        # print("OPEN POSITIONS:", pos)
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
         # r = await client.close_all_positions("BIOUSDT")
         # print("CLOSE ALL SIDES:", r)
 
-        # print(float(await client.get_usdt_balance()))
+        print(float(await client.get_usdt_balance()))
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=50, side="buy"))
 
     finally:

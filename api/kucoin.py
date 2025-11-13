@@ -12,11 +12,11 @@ import asyncio
 from typing import Optional, Literal, Dict, Any, List
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR
 from datetime import datetime, timezone
-
+import ssl
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
-
+SSL_CTX = ssl.create_default_context()
 KUCOIN_API_KEY        = os.getenv("KUCOIN_API_KEY", "")
 KUCOIN_API_SECRET     = os.getenv("KUCOIN_API_SECRET", "")
 KUCOIN_API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE", "")
@@ -74,7 +74,7 @@ class KucoinAsyncFuturesClient:
         self.api_passphrase = api_passphrase
 
         self.base_url       = base_url.rstrip("/")
-        self._client        = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client        = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
 
         # настройки по умолчанию
         self._default_lev   = int(default_leverage)

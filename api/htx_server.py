@@ -11,11 +11,16 @@ from typing import Optional, Literal, Dict, Any, List
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR
 from datetime import datetime, timezone
 import ssl
+import certifi
+
+CUSTOM_CA_BUNDLE = "/root/custom_ca_bundle.pem"
+
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
-SSL_CTX = ssl.create_default_context()
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
 HTX_API_KEY    = os.getenv("HTX_API_KEY", "")
 HTX_API_SECRET = os.getenv("HTX_API_SECRET", "")
 
@@ -34,26 +39,6 @@ def _round_step(value: Decimal, step: Decimal) -> Decimal:
 #           Linear-swap (USDT-margined perpetuals)
 # ======================================================
 class HTXAsyncClient:
-    """
-    Минималистичный async-клиент без ccxt для USDT-маржинальных perp'ов HTX (ex-Huobi).
-    Работает в режиме isolated (linear-swap-api).
-
-    Основные эндпоинты:
-    - POST /linear-swap-api/v1/swap_order          (создать ордер)
-    - POST /linear-swap-api/v1/swap_position_info  (инфо по позициям)
-    - POST /linear-swap-api/v1/swap_switch_lever_rate (установить плечо)
-
-    Важные правила HTX:
-    - Чтобы ЗАКРЫТЬ лонг: direction="sell", offset="close"
-      Чтобы ЗАКРЫТЬ шорт: direction="buy",  offset="close"
-      (если перепутать, биржа падает с ошибкой 1048)  :contentReference[oaicite:3]{index=3}
-
-    - Ошибка 1048 "Insufficient close amount available" означает,
-      что мы отправили объём больше доступного к закрытию.
-      Нужно использовать поле "available" из swap_position_info,
-      а не общее "volume".  :contentReference[oaicite:4]{index=4}
-    """
-
     def __init__(
         self,
         api_key: str,
@@ -65,12 +50,28 @@ class HTXAsyncClient:
     ):
         if not api_key or not api_secret:
             raise ValueError("HTX_API_KEY / HTX_API_SECRET не заданы")
+
         self.api_key    = api_key
         self.api_secret = api_secret.encode("utf-8")
         self.base_url   = base_url.rstrip("/")
-        self._client    = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
+
+        # 🔥 Полностью отключаем проверку сертификата
+        unsafe_ctx = ssl.create_default_context()
+        unsafe_ctx.check_hostname = False
+        unsafe_ctx.verify_mode = ssl.CERT_NONE
+
+        print("HTXAsyncClient: SSL verification DISABLED for HTX")  # чтобы точно видеть, что этот код отработал
+
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            verify=unsafe_ctx,  # <--- вместо True / certifi / пути к файлу
+            trust_env=False,
+        )
+
         self._retry_lev = int(default_retry_leverage)
         self.contract_size = 1
+
     # --- context ---
     async def __aenter__(self): 
         return self
@@ -800,7 +801,7 @@ async def _example():
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         print("CLOSE ALL:", await htx.close_all_positions(symbol))
-        # print(float(await htx.get_usdt_balance()))
+        print(float(await htx.get_usdt_balance()))
 
 
 if __name__ == "__main__":

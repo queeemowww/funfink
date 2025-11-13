@@ -14,10 +14,11 @@ from typing import Optional, Literal, Dict, Any, List, Tuple
 import httpx
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
-
+import ssl
 from dotenv import load_dotenv
 load_dotenv()
 
+SSL_CTX = ssl.create_default_context()
 BITGET_API_KEY        = os.getenv("BITGET_API_KEY", "")
 BITGET_API_SECRET     = os.getenv("BITGET_API_SECRET", "")
 BITGET_API_PASSPHRASE = os.getenv("BITGET_API_PASSPHRASE", "")
@@ -83,7 +84,7 @@ class BitgetAsyncClient:
         self.base_url      = base_url.rstrip("/")
         self.product_type  = product_type
         self.margin_coin   = margin_coin
-        self._client       = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self._client       = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
 
     # --- context manager ---
     async def __aenter__(self):
@@ -527,8 +528,8 @@ async def main():
         # print(await client.open_short_usdt(symbol, 20, leverage=5))
         
         # Позиции
-        positions = await client.get_open_positions(symbol=symbol)
-        print("OPEN POSITIONS:", positions)
+        # positions = await client.get_open_positions(symbol=symbol)
+        # print("OPEN POSITIONS:", positions)
         # positions = await client._all_positions()
         # print(positions)
 
