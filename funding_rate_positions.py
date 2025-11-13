@@ -188,7 +188,7 @@ class Logic():
         #время
         self.check_price_start=50
         self.check_price_finish=54
-        self.minutes_for_start_parse = 28
+        self.minutes_for_start_parse = 32
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
