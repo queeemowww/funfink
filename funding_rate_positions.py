@@ -153,8 +153,10 @@ class Calc():
         symbol=symbol.replace('/','')
         client = self.dict[exchange]
         res = await client.close_all_positions(symbol = symbol)
-        if (res['long_closed'] or res['short_closed']) and exchange == 'htx':
+        if (res['long_closed'] or res['short_closed']):
             await self.close_order(symbol=symbol, exchange=exchange)
+        else:
+            return res
 
 class Logic():
     def __init__(self):
@@ -1574,11 +1576,13 @@ class Logic():
                             print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                             self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
 
-                    pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
-                    pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
-
-                    long_price = pos_long['entry_price']
-                    short_price = pos_short['entry_price']
+                    while True:
+                        pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
+                        pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
+                        long_price = float(pos_long['entry_price'])
+                        short_price = float(pos_short['entry_price'])
+                        if long_price and short_price:
+                            break
 
                     new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                         "symbol": df_result.iloc[i]['symbol'],
@@ -1611,10 +1615,7 @@ class Logic():
                         new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
                     else:
                         logs_df.to_csv(self.logs_path, index=False)   
-                i+=1
-                    
-            
-
+                i+=1                   
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
@@ -1700,13 +1701,9 @@ class Logic():
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
                         print(long_ex,symbol)
-                        long_price = self.get_futures_last_prices(long_ex, symbol)
-                        short_price = self.get_futures_last_prices(short_ex, symbol)
-                        long_price, short_price = self.get_prices_parallel(
-        long_ex,
-        short_ex,
-        symbol
-    ) 
+                        long_price = float(await self.c.get_open_position(exchange=long_ex, symbol=symbol)['market_price'])
+                        short_price = float(await self.c.get_open_position(exchange=short_ex, symbol=symbol)['market_price'])
+
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
                         self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
@@ -1805,7 +1802,8 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        print(await self.c.close_order(exchange="bitget", symbol="SWARMSUSDT"))
+        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":

@@ -283,8 +283,6 @@ class HTXAsyncClient:
             await self.set_leverage(contract_code.replace("-USDT", "USDT"), int(leverage))
 
         order_price_type = "opponent" if order_type == "Market" else "limit"
-        print("volume ", volume)
-        print(int(int(float(volume))), int(float(volume)))
 
         body: Dict[str, Any] = {
             "contract_code": contract_code,
@@ -386,7 +384,7 @@ class HTXAsyncClient:
         Открыть шорт на примерно usdt_amount долларов.
         """
         code = self._to_contract_code(symbol)
-        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
 
         return await self._place_order(
             contract_code=code,
@@ -413,7 +411,7 @@ class HTXAsyncClient:
         Открыть шорт на примерно usdt_amount долларов.
         """
         code = self._to_contract_code(symbol)
-        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
 
         return await self._place_order(
             contract_code=code,
@@ -441,7 +439,7 @@ class HTXAsyncClient:
         """
         Открыть лонг на примерно usdt_amount долларов.
         """
-        print(await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy"))
+        await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
         code = self._to_contract_code(symbol)
         vol  = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
 
@@ -566,7 +564,6 @@ class HTXAsyncClient:
         # лонг → закрываем селлом
         await self.usdt_to_qty(symbol=symbol, usdt_amount=100, side="buy")
         long_avail = await self._get_available_position_volume(symbol, "buy")
-        print("long avail", long_avail)
         if long_avail:
             try:
                 results["long_closed"] = await self._place_order(
