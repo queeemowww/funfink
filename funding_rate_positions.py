@@ -1812,5 +1812,6 @@ class Logic():
         
 
 if __name__ == "__main__":
-    asyncio.run(Logic().main())
+    print(OPENROUTER_API_KEY)
+    # asyncio.run(Logic().main())
     
