@@ -183,9 +183,9 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=7
+        self.check_price_start=12
         self.check_price_finish=54
-        self.minutes_for_start_parse = 55
+        self.minutes_for_start_parse = 10
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
