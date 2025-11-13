@@ -185,7 +185,7 @@ class Logic():
         #время
         self.check_price_start=50
         self.check_price_finish=54
-        self.minutes_for_start_parse = 1
+        self.minutes_for_start_parse = 7
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -413,34 +413,48 @@ class Logic():
             return r
 
 # ---------- 2) парсеры по биржам ----------
-    def get_last_price_bitget(self,symbol: str) -> float:
+    def get_last_price_bitget(self, symbol: str) -> float:
         url = "https://api.bitget.com/api/mix/v1/market/ticker"
-        flag = 0
-        while flag < 5:
+        for _ in range(5):
             try:
-                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
-                r.raise_for_status()
-                flag = 5
-                return float(r.json()["data"]["last"])
+                r = self.safe_get(url, params={"symbol": symbol}, timeout=10)
+                data = r.json()
+                d = data.get("data")
+
+                # data может быть либо списком, либо словарём
+                if not d:
+                    raise ValueError(f"no data for bitget symbol={symbol}: {data}")
+
+                if isinstance(d, list):
+                    return float(d[0]["last"])
+                else:
+                    return float(d["last"])
+
             except Exception as e:
                 print(f"Ошибка получения цены с bitget ({symbol}): {e}")
-                flag+=1
-                return 100
+        return 100.0
 
-    def get_last_price_bybit(self,symbol: str) -> float:
+
+    def get_last_price_bybit(self, symbol: str) -> float:
         url = "https://api.bybit.com/v5/market/tickers"
-        flag = 0
-        while flag < 5:
+        for _ in range(5):
             try:
-                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
-                r.raise_for_status()
-                data = r.json()["result"]["list"][0]
-                flag = 5
-                return float(data["lastPrice"])
+                r = self.safe_get(
+                    url,
+                    params={"category": "linear", "symbol": symbol},
+                    timeout=10,
+                )
+                data = r.json()
+                lst = (data.get("result") or {}).get("list") or []
+
+                if not lst:
+                    raise ValueError(f"no data for bybit symbol={symbol}: {data}")
+
+                return float(lst[0]["lastPrice"])
             except Exception as e:
                 print(f"Ошибка получения цены с bybit ({symbol}): {e}")
-                flag+=1
-                return 100
+        return 100.0
+
 
     def get_last_price_gate(self,symbol: str) -> float:
         flag = 0
