@@ -554,7 +554,7 @@ async def main():
         # print("OPEN POSITIONS:", positions)
         # print(await client._get_positions_raw())
         # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
-        res = await client.close_all_positions('RESOLVUSDT')
+        res = await client.close_all_positions('KAVAUSDT')
         print("CLOSE ALL:", res)
 
         # Или по отдельности:

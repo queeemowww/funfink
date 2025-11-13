@@ -536,7 +536,7 @@ async def main():
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
         # # Закрыть и лонг, и шорт целиком (если есть)
-        res = await client.close_all_positions("IPUSDT")
+        res = await client.close_all_positions("KAVAUSDT")
         print("CLOSE ALL:", res)
 
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy"))

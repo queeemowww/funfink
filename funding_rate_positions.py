@@ -202,7 +202,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.1
+        self.demanded_funding_rev=0.5
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1475,7 +1475,6 @@ class Logic():
                     self.tg_send(f'Не открываем по {sym}, разница между биржами {diff_f} больше потенциального дохода от фандинга {df_result.iloc[i]["funding_diff_metric"]}')
                 
                 else:
-                    print("AaaaAAAAAAAAAAAAAAAA")
                     new_symbols.append(sym)
                             
                     #open_position
