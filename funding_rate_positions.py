@@ -30,13 +30,14 @@ import sys
 import ssl
 import certifi
 
+load_dotenv() 
+
 CA_BUNDLE = certifi.where()
 SSL_CTX = ssl.create_default_context()
 SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 url = "https://openrouter.ai/api/v1/chat/completions"
-load_dotenv() 
 
 BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
 BYBIT_API_SECRET = os.getenv('BYBIT_API_SECRET')
