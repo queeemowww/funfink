@@ -36,9 +36,6 @@ CA_BUNDLE = certifi.where()
 SSL_CTX = ssl.create_default_context()
 SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-url = "https://openrouter.ai/api/v1/chat/completions"
-
 BYBIT_API_KEY = os.getenv('BYBIT_API_KEY')
 BYBIT_API_SECRET = os.getenv('BYBIT_API_SECRET')
 
@@ -188,7 +185,7 @@ class Logic():
         #время
         self.check_price_start=50
         self.check_price_finish=54
-        self.minutes_for_start_parse = 37
+        self.minutes_for_start_parse = 43
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -205,7 +202,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.5
+        self.demanded_funding_rev=0.1
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1211,45 +1208,6 @@ class Logic():
             self.res_sorted_dir = 'temp_data/result_sorted'+ datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
             result_sorted.to_csv(self.res_sorted_dir, index=False, encoding="utf-8")   
             print(result_sorted.head(5))
-            headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        }
-            def analyze(text):
-                data = {
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Придумай анекдот про токен с парой {text}. "
-                                "Придумывай злые анекдоты, с пошлостями, чернухой. "
-                                "Криптокуколдизм очень приветствуется."
-                            ),
-                        },
-                    ],
-                }
-
-                try:
-                    response = requests.post(
-                        url,
-                        headers=headers,
-                        data=json.dumps(data),
-                        timeout=20,
-                        verify=CA_BUNDLE,   # <-- ВАЖНО: используем certifi
-                    )
-                    response.raise_for_status()
-                except Exception as e:
-                    print(f"⚠️ Ошибка запроса к OpenRouter: {e}")
-                    return "Сегодня без мема (OpenRouter недоступен)"
-
-                try:
-                    result = response.json()
-                    return result["choices"][0]["message"]["content"]
-                except Exception as e:
-                    print(f"⚠️ Ошибка разбора ответа OpenRouter: {e}")
-                    return "Сегодня без мема"
-
             analytical_df=result_sorted.head(5)
             text=[]
             self.all_balance = 0
@@ -1812,6 +1770,5 @@ class Logic():
         
 
 if __name__ == "__main__":
-    print(OPENROUTER_API_KEY)
-    # asyncio.run(Logic().main())
+    asyncio.run(Logic().main())
     
