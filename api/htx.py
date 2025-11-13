@@ -799,7 +799,7 @@ async def _example():
         # print("POSITIONS:", await htx._all_positions())
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        print("CLOSE ALL:", await htx.close_all_positions(symbol))
+        print("CLOSE ALL:", await htx.close_all_positions("SOONUSDT"))
         # print(float(await htx.get_usdt_balance()))
 
 

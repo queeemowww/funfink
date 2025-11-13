@@ -528,7 +528,7 @@ async def main():
         # print(await client.open_short_usdt(symbol, 20, leverage=5))
         
         # Позиции
-        # positions = await client.get_open_positions(symbol=symbol)
+        # positions = await client.get_open_positions(symbol="SOONUSDT")
         # print("OPEN POSITIONS:", positions)
         # positions = await client._all_positions()
         # print(positions)
@@ -536,10 +536,10 @@ async def main():
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
         # # Закрыть и лонг, и шорт целиком (если есть)
-        # res = await client.close_all_positions(symbol)
-        # print("CLOSE ALL:", res)
+        res = await client.close_all_positions("IPUSDT")
+        print("CLOSE ALL:", res)
 
-        print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
+        # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy"))
 
 if __name__ == "__main__":
     asyncio.run(main())

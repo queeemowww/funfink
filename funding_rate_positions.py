@@ -185,7 +185,7 @@ class Logic():
         #время
         self.check_price_start=50
         self.check_price_finish=54
-        self.minutes_for_start_parse = 45
+        self.minutes_for_start_parse = 1
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -376,14 +376,41 @@ class Logic():
         return results["long"], results["short"]
 
 #отправка в тг
-    def tg_send(self,text: str):
+    def tg_send(self, text: str):
+        url = f"https://api.telegram.org/bot{self.TG_TOKEN}/sendMessage"
+        data = {"chat_id": self.TG_CHAT, "text": text}
+
         try:
-            url = f"https://api.telegram.org/bot{self.TG_TOKEN}/sendMessage"
-            data = {"chat_id": self.TG_CHAT, "text": text}
-            requests.post(url, json=data, timeout=10)
+            # 1) Пытаемся с нормальной проверкой сертификатов (через certifi)
+            requests.post(url, json=data, timeout=10, verify=CA_BUNDLE)
+
+        except requests.exceptions.SSLError as e:
+            print("⚠️ SSL ошибка при отправке в Telegram, пробую без verify:", e)
+            try:
+                # 2) Fallback: отключаем verify ТОЛЬКО для Телеги
+                requests.post(url, json=data, timeout=10, verify=False)
+            except Exception as e2:
+                print("Ошибка отправки в Telegram (fallback тоже упал):", e2)
+
         except Exception as e:
             print("Ошибка отправки в Telegram:", e)
 
+
+    def safe_get(self, url: str, *, params=None, timeout: float = 10.0):
+        """
+        GET-запрос с fallback:
+        - сначала verify=CA_BUNDLE
+        - при SSL-ошибке пробуем verify=False
+        """
+        try:
+            r = requests.get(url, params=params, timeout=timeout, verify=CA_BUNDLE)
+            r.raise_for_status()
+            return r
+        except requests.exceptions.SSLError as e:
+            print(f"⚠️ SSL ошибка при запросе {url} (попробуем без verify): {e}")
+            r = requests.get(url, params=params, timeout=timeout, verify=False)
+            r.raise_for_status()
+            return r
 
 # ---------- 2) парсеры по биржам ----------
     def get_last_price_bitget(self,symbol: str) -> float:
@@ -391,7 +418,7 @@ class Logic():
         flag = 0
         while flag < 5:
             try:
-                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 flag = 5
                 return float(r.json()["data"]["last"])
@@ -405,7 +432,7 @@ class Logic():
         flag = 0
         while flag < 5:
             try:
-                r = requests.get(url, params={"category": "linear", "symbol": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 data = r.json()["result"]["list"][0]
                 flag = 5
@@ -421,7 +448,7 @@ class Logic():
             try:
             # USDT-margined futures
                 url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
-                r = requests.get(url, params={"contract": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 flag = 5
                 return float(r.json()[0]["last"])
@@ -435,7 +462,7 @@ class Logic():
         while flag < 5:
             try:
                 url = "https://www.okx.com/api/v5/market/ticker"
-                r = requests.get(url, params={"instId": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 flag = 5
                 return float(r.json()["data"][0]["last"])
@@ -478,7 +505,7 @@ class Logic():
         flag = 0
         while flag < 5:
             try:
-                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 j = r.json()
                 
@@ -505,7 +532,7 @@ class Logic():
         while flag < 5:
             try:
                 url = "https://api-futures.kucoin.com/api/v1/ticker"
-                r = requests.get(url, params={"symbol": symbol}, timeout=10)
+                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
                 r.raise_for_status()
                 flag = 5
                 return float(r.json()["data"]["price"])
@@ -1247,9 +1274,9 @@ class Logic():
             df_funding11=df_funding11[df_funding11['exchange']!='gate']
             df_funding11=df_funding11[df_funding11['exchange']!='kucoin_futures']
             df_funding11=df_funding11.dropna(subset=["funding_rate"])
-            df_funding1=df_funding11[['timestamp_utc','exchange','symbol','symbol_n','funding_rate','funding_time']]
-            df_funding1['funding_rate']=df_funding1['funding_rate']*100
-            df_funding1['funding_rate_abs']=abs(df_funding1['funding_rate'])
+            df_funding1 = df_funding11[['timestamp_utc','exchange','symbol','symbol_n','funding_rate','funding_time']].copy()
+            df_funding1['funding_rate'] = df_funding1['funding_rate'] * 100
+            df_funding1['funding_rate_abs'] = df_funding1['funding_rate'].abs()
             df_funding1_s=df_funding1.sort_values(by='funding_rate_abs',ascending=False)
             df_funding1_s['funding_time'] = pd.to_datetime(df_funding1_s['funding_time'], utc=True, errors='coerce')
 
@@ -1765,8 +1792,12 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        # print(self.get_last_price_okx("RESOLV-USDT"))
-        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        print(self.get_last_price_okx("SOON-USDT"))
+        print(self.get_last_price_htx("SOON-USDT"))
+        print(self.get_last_price_bybit("IPUSDT"))
+        print(self.get_last_price_bitget("IPUSDT"))
+
+        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":
