@@ -1225,7 +1225,7 @@ class Logic():
 🟤HTX: {self.balance.get('htx'):.2f}\n
 ⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
 🟢GATE: {self.balance.get('gate'):.2f}\n\n 
-🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n{analyze(analytical_df['symbol'].iloc[i])}""")
+🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n""")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
                 max_time = (analytical_df['max_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
