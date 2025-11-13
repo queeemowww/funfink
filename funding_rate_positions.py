@@ -28,7 +28,9 @@ import os
 from pathlib import Path
 import sys
 import ssl
+import certifi
 
+CA_BUNDLE = certifi.where()
 SSL_CTX = ssl.create_default_context()
 SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
 
@@ -1214,27 +1216,39 @@ class Logic():
         }
             def analyze(text):
                 data = {
-                    "model": "openai/gpt-4o-mini",  
+                    "model": "openai/gpt-4o-mini",
                     "messages": [
                         {
                             "role": "user",
-                            "content": f"Придумай анекдот про токен с парой {text}. Придумывай злые анекдоты, с пошлостями, чернухой. Криптокуколдизм очень привествуется.",
-                        }
+                            "content": (
+                                f"Придумай анекдот про токен с парой {text}. "
+                                "Придумывай злые анекдоты, с пошлостями, чернухой. "
+                                "Криптокуколдизм очень приветствуется."
+                            ),
+                        },
                     ],
                 }
-                # Отправка запроса
-                response = requests.post(url, headers=headers, data=json.dumps(data))
-                
-                # Обработка и вывод ответа
-                if response.status_code == 200:
+
+                try:
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        data=json.dumps(data),
+                        timeout=20,
+                        verify=CA_BUNDLE,   # <-- ВАЖНО: используем certifi
+                    )
+                    response.raise_for_status()
+                except Exception as e:
+                    print(f"⚠️ Ошибка запроса к OpenRouter: {e}")
+                    return "Сегодня без мема (OpenRouter недоступен)"
+
+                try:
                     result = response.json()
-                    try:
-                        return(result["choices"][0]["message"]["content"])  # Вывод ответа модели
-                    
-                    except:
-                        return('Сегодня без мема')
-                else:
-                    return("Сегодня без мема(")
+                    return result["choices"][0]["message"]["content"]
+                except Exception as e:
+                    print(f"⚠️ Ошибка разбора ответа OpenRouter: {e}")
+                    return "Сегодня без мема"
+
             analytical_df=result_sorted.head(5)
             text=[]
             self.all_balance = 0
