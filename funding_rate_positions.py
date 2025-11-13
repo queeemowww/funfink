@@ -1793,7 +1793,7 @@ class Logic():
 
     async def main(self):
         # print(self.get_last_price_okx("RESOLV-USDT"))
-        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":

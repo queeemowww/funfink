@@ -539,7 +539,7 @@ async def main():
         # res = await client.close_all_positions(symbol)
         # print("CLOSE ALL:", res)
 
-        # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
+        print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
 
 if __name__ == "__main__":
     asyncio.run(main())
