@@ -505,7 +505,7 @@ class BybitAsyncClient:
         out["entry_usdt"] = float(float(it[0].get("avgPrice")) * float(it[0].get("size")) / float(out["leverage"]))
         out["pnl"] = it[0].get("unrealisedPnl", "0")
         out["entry_price"] = it[0].get("avgPrice")
-        out["merket_price"] = it[0].get('markPrice')
+        out["market_price"] = it[0].get('markPrice')
 
 
         return out or None

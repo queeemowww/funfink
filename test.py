@@ -1,13 +1,1 @@
-import re
-import math
-import pandas as pd
-
-# df = pd.read_csv("temp_data/result_sorted20251106_1605.csv")
-# print(df)
-
-# s1 = 65.84
-
-# s2 = 64.20
-# print(int(int(min(s1,s2)) * 0.95))
-
-print(re.findall(r'(?i)(?<![A-Za-z])(long|short)(?![A-Za-z])', '__dual__lfg__')[0])
+2025-11-13 23:55:32,IP/USDT,okx,bybit,-1.21311867407573,-0.293594,0.91952467407573,3.523911764705882,3.5354,-0.3802497162315509,34.0,active

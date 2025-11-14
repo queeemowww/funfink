@@ -676,7 +676,6 @@ class OKXAsyncClient:
 
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
         items = raw.get("data") or []
-        print(items)
         result: List[dict] = []
 
         if not items:

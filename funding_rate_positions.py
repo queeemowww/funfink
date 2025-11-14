@@ -1694,12 +1694,10 @@ class Logic():
                     await self._anti_liq_guard(active_logs.iloc[i])
                     try:
                         long_ex = active_logs.iloc[i]['long_exchange']
-                        print(active_logs)
                         short_ex = active_logs.iloc[i]['short_exchange']
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
-                        print(long_ex,symbol)
                         long_pos = await self.c.get_open_position(exchange=long_ex, symbol=symbol)
                         short_pos = await self.c.get_open_position(exchange=short_ex, symbol=symbol)
                         long_price = float(long_pos['market_price'])
