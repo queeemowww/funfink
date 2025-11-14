@@ -204,7 +204,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=20
+        self.demanded_funding_rev=0.5
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
