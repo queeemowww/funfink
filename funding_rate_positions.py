@@ -186,11 +186,11 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=7
-        self.check_price_finish=56
-        self.minutes_for_start_parse = 57
+        self.check_price_finish=49
+        self.minutes_for_start_parse = 50
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
-        self.hours_parsingpairs_interval=24
+        self.hours_parsingpairs_interval=2
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
@@ -1796,19 +1796,14 @@ class Logic():
                     self.tg_send(f"▶Сохранили новые пары в {datetime.now().strftime('%H:%M:%S')}")
                 except:
                     self.tg_send(f"Не получилось сохранить новые пары в {datetime.now().strftime('%H:%M:%S')}")
+                    pass
                 
                 # ждём минуту, чтобы не повторять в том же часу
                 await asyncio.sleep(60)
 
     async def main(self):
-        symbol = 'RESOLVUSDT'
-        print("OPEN LONG:", await self.c.dict['okx'].open_long(symbol = symbol, qty = 300, leverage=5))
-        print("POSITIONS:", await self.c.dict['okx'].get_open_positions(symbol))
-        print("LAST PRICE: ", self.get_last_price_okx(self.convert_symbol_for_exchanges('okx',"RESOLV/USDT")))
-
-        # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        print("CLOSE ALL:", await self.c.dict['okx'].close_all_positions(symbol=symbol))
-        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        # await asyncio.gather(self.run_daily_task())
         
 
 if __name__ == "__main__":
