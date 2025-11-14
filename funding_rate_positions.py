@@ -1809,7 +1809,7 @@ class Logic():
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         print("CLOSE ALL:", await self.c.dict['htx'].close_all_positions(symbol=symbol))
-        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":
