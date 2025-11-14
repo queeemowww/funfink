@@ -1802,7 +1802,7 @@ class Logic():
 
     async def main(self):
         symbol = 'BIOUSDT'
-        print("OPEN LONG:", await self.c.dict['okx'].open_long(symbol = symbol, qty = 300, leverage=5, order_type="Market"))
+        print("OPEN LONG:", await self.c.dict['okx'].open_long(symbol = symbol, qty = 300, leverage=5))
         print("POSITIONS:", await self.c.dict['okx'].get_open_positions(symbol))
         print("POSITIONS:", await self.c.dict['okx']._all_positions())
         print("LAST PRICE: ", self.get_last_price_htx(self.convert_symbol_for_exchanges('okx',"BIO/USDT")))
