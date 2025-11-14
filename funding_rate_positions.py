@@ -187,7 +187,7 @@ class Logic():
         #время
         self.check_price_start=7
         self.check_price_finish=54
-        self.minutes_for_start_parse = 55
+        self.minutes_for_start_parse = 0
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -204,7 +204,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.5
+        self.demanded_funding_rev=20
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1697,12 +1697,13 @@ class Logic():
                         print(active_logs)
                         short_ex = active_logs.iloc[i]['short_exchange']
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
-                        threshold_pct = self.compute_close_threshold_pct(possible_revenue)
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
                         print(long_ex,symbol)
-                        long_price = float(await self.c.get_open_position(exchange=long_ex, symbol=symbol)['market_price'])
-                        short_price = float(await self.c.get_open_position(exchange=short_ex, symbol=symbol)['market_price'])
+                        long_pos = await self.c.get_open_position(exchange=long_ex, symbol=symbol)
+                        short_pos = await self.c.get_open_position(exchange=short_ex, symbol=symbol)
+                        long_price = float(long_pos['market_price'])
+                        short_price = float(short_pos['market_price'])
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
                         self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
@@ -1802,8 +1803,8 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        print(await self.c.close_order(exchange="bitget", symbol="SWARMSUSDT"))
-        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        # print(await self.c.close_order(exchange="bitget", symbol="SWARMSUSDT"))
+        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":
