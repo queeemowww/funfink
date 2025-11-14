@@ -794,9 +794,10 @@ async def _example():
         # await htx.usdt_to_qty(symbol=symbol, usdt_amount=90, side='buy')
         print("POSITIONS:", await htx.get_open_positions(symbol))
         print("POSITIONS:", await htx._all_positions())
+        print("LAST PRICE: ")
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        print("CLOSE ALL:", await htx.close_all_positions("SOONUSDT"))
+        print("CLOSE ALL:", await htx.close_all_positions(symbol=symbol))
         # print(float(await htx.get_usdt_balance()))
 
 

@@ -1801,8 +1801,15 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        # print(await self.c.close_order(exchange="bitget", symbol="SWARMSUSDT"))
-        await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
+        symbol = 'BIOUSDT'
+        print("OPEN LONG:", await self.c.dict['htx'].open_long(symbol = symbol, qty = 300, leverage=5, order_type="Market"))
+        print("POSITIONS:", await self.c.dict['htx'].get_open_positions(symbol))
+        print("POSITIONS:", await self.c.dict['htx']._all_positions())
+        print("LAST PRICE: ", self.get_last_price_htx("BIO/USDT"))
+
+        # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
+        print("CLOSE ALL:", await self.c.dict['htx'].close_all_positions(symbol=symbol))
+        # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
 if __name__ == "__main__":
