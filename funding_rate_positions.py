@@ -1801,14 +1801,14 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        symbol = 'SWARMSUSDT'
-        print("OPEN LONG:", await self.c.dict['htx'].open_long(symbol = symbol, qty = 300, leverage=5, order_type="Market"))
-        print("POSITIONS:", await self.c.dict['htx'].get_open_positions(symbol))
-        print("POSITIONS:", await self.c.dict['htx']._all_positions())
-        print("LAST PRICE: ", self.get_last_price_htx(self.convert_symbol_for_exchanges('htx',"SWARMS/USDT")))
+        symbol = 'BIOUSDT'
+        print("OPEN LONG:", await self.c.dict['okx'].open_long(symbol = symbol, qty = 300, leverage=5, order_type="Market"))
+        print("POSITIONS:", await self.c.dict['okx'].get_open_positions(symbol))
+        print("POSITIONS:", await self.c.dict['okx']._all_positions())
+        print("LAST PRICE: ", self.get_last_price_htx(self.convert_symbol_for_exchanges('okx',"BIO/USDT")))
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
-        print("CLOSE ALL:", await self.c.dict['htx'].close_all_positions(symbol=symbol))
+        print("CLOSE ALL:", await self.c.dict['okx'].close_all_positions(symbol=symbol))
         # await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         
 
