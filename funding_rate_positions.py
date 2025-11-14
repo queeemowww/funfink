@@ -1801,10 +1801,10 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        symbol = 'BIOUSDT'
+        symbol = 'RESOLVUSDT'
         print("OPEN LONG:", await self.c.dict['okx'].open_long(symbol = symbol, qty = 300, leverage=5))
         print("POSITIONS:", await self.c.dict['okx'].get_open_positions(symbol))
-        print("LAST PRICE: ", self.get_last_price_htx(self.convert_symbol_for_exchanges('okx',"BIO/USDT")))
+        print("LAST PRICE: ", self.get_last_price_okx(self.convert_symbol_for_exchanges('okx',"RESOLV/USDT")))
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         print("CLOSE ALL:", await self.c.dict['okx'].close_all_positions(symbol=symbol))
