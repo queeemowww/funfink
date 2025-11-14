@@ -190,7 +190,7 @@ class Logic():
         self.minutes_for_start_parse = 50
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
-        self.hours_parsingpairs_interval=2
+        self.hours_parsingpairs_interval=24
         # ===== Настройки =====
         self.take_risk_size=0.2
         self.TIMEOUT = httpx.Timeout(15.0, connect=15.0, read=15.0)
