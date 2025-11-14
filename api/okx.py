@@ -675,6 +675,7 @@ class OKXAsyncClient:
             params["instId"] = to_okx_inst_id(symbol)
 
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
+        print(raw)
         items = raw.get("data") or []
         result: List[dict] = []
 
@@ -820,17 +821,17 @@ async def main():
         # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
         # открыть сделки (пример):
-        # r = await client.open_long_usdt(symbol, 50, leverage=1)
-        # print("OPEN LONG:", r)
+        r = await client.open_long_usdt(symbol, 300, leverage=5)
+        print("OPEN LONG:", r)
         # r = await client.open_short_usdt(symbol, 50, leverage=1)
         # print("OPEN SHORT:", r)
 
-        # pos = await client.get_open_positions(symbol=symbol)
-        # print("OPEN POSITIONS:", pos)
+        pos = await client.get_open_positions(symbol=symbol)
+        print("OPEN POSITIONS:", pos)
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
-        r = await client.close_all_positions("SOONUSDT")
+        r = await client.close_all_positions(symbol=symbol)
         print("CLOSE ALL SIDES:", r)
 
         print(float(await client.get_usdt_balance()))

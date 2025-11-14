@@ -530,8 +530,8 @@ async def main():
         # Позиции
         positions = await client.get_open_positions(symbol="SOONUSDT")
         print("OPEN POSITIONS:", positions)
-        # positions = await client._all_positions()
-        # print(positions)
+        positions = await client._all_positions()
+        print(positions)
 
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)

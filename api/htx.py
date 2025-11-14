@@ -788,12 +788,12 @@ async def _example():
     async with HTXAsyncClient(HTX_API_KEY, HTX_API_SECRET) as htx:
         # qty = await htx.usdt_to_qty(symbol=symbol, usdt_amount=30, side="sell")
         # print(qty)
-        # print("OPEN LONG:", await htx.open_long(symbol = symbol, qty = 10, leverage=5, order_type="Market"))
+        print("OPEN LONG:", await htx.open_long(symbol = symbol, qty = 300, leverage=5, order_type="Market"))
         # print(await htx.usdt_to_qty(symbol=symbol, usdt_amount=50, side="buy"))
         # print("OPEN SHORT:", await htx.open_long(symbol, 10, leverage=1))
         # await htx.usdt_to_qty(symbol=symbol, usdt_amount=90, side='buy')
-        # print("POSITIONS:", await htx.get_open_positions(symbol))
-        # print("POSITIONS:", await htx._all_positions())
+        print("POSITIONS:", await htx.get_open_positions(symbol))
+        print("POSITIONS:", await htx._all_positions())
 
         # Закрываем обе стороны безопасно (не упадёт по RuntimeError)
         print("CLOSE ALL:", await htx.close_all_positions("SOONUSDT"))

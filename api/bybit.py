@@ -546,15 +546,15 @@ async def main():
     async with BybitAsyncClient(API_KEY, API_SECRET, testnet=False) as client:
         time_start = time.time()
         # Открыть для примера
-        # print(await client.open_long(symbol=symbol, qty='300', leverage=5))
+        print(await client.open_long(symbol=symbol, qty='300', leverage=5))
         # print(await client.open_short_usdt('RESOLVUSDT', 20, leverage=1))
 
         # Посмотреть открытые позиции
-        # positions = await client.get_open_positions()
-        # print("OPEN POSITIONS:", positions)
-        # print(await client._get_positions_raw())
+        positions = await client.get_open_positions()
+        print("OPEN POSITIONS:", positions)
+        # # print(await client._get_positions_raw())
         # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
-        res = await client.close_all_positions('KAVAUSDT')
+        res = await client.close_all_positions(symbol)
         print("CLOSE ALL:", res)
 
         # Или по отдельности:
