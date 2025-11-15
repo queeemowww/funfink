@@ -187,7 +187,7 @@ class Logic():
         #время
         self.check_price_start=7
         self.check_price_finish=49
-        self.minutes_for_start_parse = 50
+        self.minutes_for_start_parse = 33
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -1534,7 +1534,6 @@ class Logic():
                                     sym_close=row['symbol']
                                     print(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
                                     self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
-
                                     await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
                                     self.c.close_order(sym_close,short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
@@ -1545,14 +1544,12 @@ class Logic():
                                 self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
                             elif sym in mask['symbol'].values:
                                 row = mask.loc[mask['symbol'] == sym].iloc[0]
-
                                 long_ex_close = row['long_exchange']
                                 short_ex_close = row['short_exchange']
                                 print(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
                                 self.tg_send(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
-
-                                await asyncio.gather(self.c.close_order(symbol=sym_close,exchange=long_ex_close),
-                                    self.c.close_order(symbol=sym_close,exchange=short_ex_close))
+                                await asyncio.gather(self.c.close_order(symbol=sym,exchange=long_ex_close),
+                                    self.c.close_order(symbol=sym,exchange=short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
