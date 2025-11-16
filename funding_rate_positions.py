@@ -1624,7 +1624,7 @@ class Logic():
 
     async def run_window(self):
         self.confirmations = {}
-        avg_diff = []     
+        self.avg_diff = {}  
         while True:
             now = datetime.now()
             seconds_15 = now.minute
@@ -1708,9 +1708,11 @@ class Logic():
                         short_price = float(short_pos['market_price'])
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        avg_diff.append(current_old_diff)
-                        print(statistics.fmean(avg_diff))
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else statistics.fmean(avg_diff)
+                        if not symbol in self.avg_diff:
+                            self.avg_diff[symbol] = []
+                        self.avg_diff[symbol].append(current_old_diff)
+                        print(statistics.fmean(self.avg_diff[symbol]))
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else statistics.fmean(self.avg_diff[symbol])
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
@@ -1745,6 +1747,7 @@ class Logic():
                                 (logs_df['status'] == 'active')
                             )
                             logs_df.loc[mask_close, 'status'] = 'closed'
+                            del self.avg_diff[symbol]
                             try:
                                 logs_df.to_csv(self.logs_path, index=False)
                             except Exception as e:
