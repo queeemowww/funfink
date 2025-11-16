@@ -9,6 +9,7 @@ import httpx
 import pandas as pd
 import requests
 import numpy as np
+import statistics
 import re
 import math
 from datetime import datetime, timezone, timedelta
@@ -148,26 +149,18 @@ class Calc():
 
             
     async def close_order(self, symbol, exchange):
-        # нормализация символа
         if not len(re.findall(".+USDT", symbol)):
-            symbol = symbol + '/USDT'
-        symbol = symbol.replace('/', '')
-
+            symbol = symbol+'/USDT'
+        symbol=symbol.replace('/','')
         client = self.dict[exchange]
-
-        # 🔹 один вызов без рекурсии
-        try:
-            res = await client.close_all_positions(symbol=symbol)
-            print(f"[close_order] {exchange} {symbol} -> {res}")
+        res = await client.close_all_positions(symbol = symbol)
+        if (res['long_closed'] or res['short_closed']):
+            try:
+                await self.close_order(symbol=symbol, exchange=exchange)
+            except:
+                return res
+        else:
             return res
-        except httpx.HTTPStatusError as e:
-            # полезно подсмотреть, что именно отвечает Bitget
-            body = e.response.text
-            print(f"[close_order] HTTP error on {exchange} {symbol}: {e} | body={body}")
-            # если хочешь, можешь тут распарсить код и
-            # считать «нет позиции» нормальной ситуацией
-            raise
-
 
 class Logic():
     def __init__(self):
@@ -1545,6 +1538,7 @@ class Logic():
                                     sym_close=row['symbol']
                                     print(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
                                     self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+
                                     await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
                                     self.c.close_order(sym_close,short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
@@ -1559,6 +1553,7 @@ class Logic():
                                 short_ex_close = row['short_exchange']
                                 print(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
                                 self.tg_send(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
+
                                 await asyncio.gather(self.c.close_order(symbol=sym,exchange=long_ex_close),
                                     self.c.close_order(symbol=sym,exchange=short_ex_close))
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
@@ -1628,7 +1623,8 @@ class Logic():
 
 
     async def run_window(self):
-        self.confirmations = {}      
+        self.confirmations = {}
+        avg_diff = []     
         while True:
             now = datetime.now()
             seconds_15 = now.minute
@@ -1712,7 +1708,9 @@ class Logic():
                         short_price = float(short_pos['market_price'])
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
+                        avg_diff.append(current_old_diff)
+                        print(statistics.fmean(avg_diff))
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else statistics.fmean(avg_diff)
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
