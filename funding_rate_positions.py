@@ -148,15 +148,26 @@ class Calc():
 
             
     async def close_order(self, symbol, exchange):
+        # нормализация символа
         if not len(re.findall(".+USDT", symbol)):
-            symbol = symbol+'/USDT'
-        symbol=symbol.replace('/','')
+            symbol = symbol + '/USDT'
+        symbol = symbol.replace('/', '')
+
         client = self.dict[exchange]
-        res = await client.close_all_positions(symbol = symbol)
-        if (res['long_closed'] or res['short_closed']):
-            await self.close_order(symbol=symbol, exchange=exchange)
-        else:
+
+        # 🔹 один вызов без рекурсии
+        try:
+            res = await client.close_all_positions(symbol=symbol)
+            print(f"[close_order] {exchange} {symbol} -> {res}")
             return res
+        except httpx.HTTPStatusError as e:
+            # полезно подсмотреть, что именно отвечает Bitget
+            body = e.response.text
+            print(f"[close_order] HTTP error on {exchange} {symbol}: {e} | body={body}")
+            # если хочешь, можешь тут распарсить код и
+            # считать «нет позиции» нормальной ситуацией
+            raise
+
 
 class Logic():
     def __init__(self):
