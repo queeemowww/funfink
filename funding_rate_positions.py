@@ -1692,7 +1692,7 @@ class Logic():
                             self.avg_diff[symbol] = []
                         self.avg_diff[symbol].append(current_old_diff)
                         print(statistics.fmean(self.avg_diff[symbol]))
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else statistics.fmean(self.avg_diff[symbol])
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4-0.8 * possible_revenue
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
