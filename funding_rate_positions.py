@@ -9,7 +9,6 @@ import httpx
 import pandas as pd
 import requests
 import numpy as np
-import statistics
 import re
 import math
 from datetime import datetime, timezone, timedelta
@@ -190,8 +189,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=7
-        self.check_price_finish=54
-        self.minutes_for_start_parse = 55
+        self.check_price_finish=49
+        self.minutes_for_start_parse = 50
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -1107,112 +1106,8 @@ class Logic():
         return max(0.10, base + k * possible_rev_frac)
 
 
-    async def _open_candidate_at_prices(self, cand: dict, logs_df: pd.DataFrame) -> None:
-        """
-        cand:
-          {
-            symbol, long_ex, short_ex,
-            long_funding, short_funding, funding_diff_metric,
-            best_long_price, best_short_price, stored_diff, opened
-          }
-        logs_df — текущий DataFrame логов (в run_at_50 он уже загружен).
-        """
-        from datetime import datetime  # можно убрать, если уже импортирован наверху файла
-
-        sym             = cand["symbol"]
-        long_ex         = cand["long_ex"]
-        short_ex        = cand["short_ex"]
-        long_funding    = cand["long_funding"]         # уже в %
-        short_funding   = cand["short_funding"]        # уже в %
-        possible_rev    = cand["funding_diff_metric"]  # уже в %
-        best_long_price = cand["best_long_price"]
-        best_short_price= cand["best_short_price"]
-
-        # Если вдруг за время ожидания пара уже успела появиться как активная — не открываем
-        if self.pair_already_logged(long_ex, short_ex, logs_df, sym):
-            print(f"[ENTRY] {sym}: уже есть активная позиция {long_ex} ↔ {short_ex}, пропускаем.")
-            return
-
-        # Размер позиции
-        qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
-        if not qty or qty <= 0:
-            print(f"[ENTRY] {sym}: не удалось посчитать qty, пропускаем.")
-            return
-
-        spread_pct = 0.0
-        if best_long_price:
-            spread_pct = (cand["stored_diff"] / best_long_price) * 100.0
-
-        print(f"[ENTRY] Открываем {sym}: long {long_ex}, short {short_ex}, qty={qty}")
-        self.tg_send(
-            f"🚀 Открываем пару {sym}\n"
-            f"long {long_ex} (fund={long_funding:.4f}%)\n"
-            f"short {short_ex} (fund={short_funding:.4f}%)\n"
-            f"спред по ценам: {spread_pct:.4f}%\n"
-            f"ожидаемый доход по фандингу: {possible_rev:.4f}%"
-        )
-
-        # Открываем зеркальные позиции
-        await asyncio.gather(
-            self.c.open_order(direction="long",  symbol=sym, exchange=long_ex,  size=qty),
-            self.c.open_order(direction="short", symbol=sym, exchange=short_ex, size=qty),
-        )
-
-        # Ждём реальные entry_price от бирж (до 5 секунд, 10 попыток по 0.5 сек)
-        long_price = short_price = None
-        for _ in range(10):
-            try:
-                long_pos  = await self.c.get_open_position(symbol=sym, exchange=long_ex)
-                short_pos = await self.c.get_open_position(symbol=sym, exchange=short_ex)
-                long_price  = float(long_pos["entry_price"])
-                short_price = float(short_pos["entry_price"])
-                if long_price and short_price:
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-
-        # если не получилось вытащить entry_price — используем зафиксированные цены
-        if not long_price or not short_price:
-            long_price  = best_long_price
-            short_price = best_short_price
-
-        if long_price:
-            diff_pct = (long_price - short_price) / long_price * 100.0
-        else:
-            diff_pct = 0.0
-
-        new_row = {
-            "ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": sym,
-            "long_exchange": long_ex,
-            "short_exchange": short_ex,
-            "long_funding": long_funding,           # в % как и раньше
-            "short_funding": short_funding,         # в % как и раньше
-            "possible_revenue": possible_rev,       # в % как и раньше
-            "long_price": long_price,
-            "short_price": short_price,
-            "diff": diff_pct,                       # ценовой спред в %
-            "qty": qty,
-            "status": "active",
-        }
-
-        # добавляем в df в памяти
-        logs_df.loc[len(logs_df)] = new_row
-
-        # и в файл
-        if os.path.exists(self.logs_path):
-            pd.DataFrame([new_row]).to_csv(self.logs_path, mode="a", header=False, index=False)
-        else:
-            logs_df.to_csv(self.logs_path, index=False)
-
-
 # ===== Пример использования =====
     async def run_at_50(self):
-        f_long = {}
-        f_short = {}
-        f_long_now = 0
-        f_short_now = 0
         # 1) если у тебя уже есть CSV с парами:
         while True:
             now = datetime.now()
@@ -1463,148 +1358,271 @@ class Logic():
                                 self.c.close_order(symbol=symbol, exchange=current_short))
                         # Обновляем значение в исходном df
                         logs_df.loc[idx, 'status'] = 'closed'
-                        logs_df.to_csv(self.logs_path, index=False)
+            logs_df.to_csv(self.logs_path, index=False)           
+                        
+            i=0 
 
-                        # === НОВАЯ ЛОГИКА ОТКРЫТИЯ ПОЗИЦИЙ С ПОИСКОМ ЛУЧШЕЙ ТОЧКИ ВХОДА ===
+            new_symbols=[] 
+            while i<=len(df_result)-1 and df_result.iloc[i]['funding_diff_metric']>=self.demanded_funding_rev:
+                 
+                row = df_result.iloc[i]
+                sym = row['symbol']
+                print(sym)
+                long_ex = row['min_exchange']
+                short_ex = row['max_exchange']
+                f_long, f_short = self.get_prices_parallel(
+                    long_ex,
+                    short_ex,
+                    sym
+                )
+                diff_f=(f_long-f_short)/f_long*100
 
-                        # df_result уже отфильтрован по биржам и умножен на 100 по funding_rate
-                        df_result = df_result.sort_values("funding_diff_metric", ascending=False).reset_index(drop=True)
+                #если время разное, ищем биржу с лучшим diff
+                if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
+                    long_ex = row['min_exchange']
+                    short_ex = row['max_exchange']
+                    short_funding=row['max_rate']
+                    long_funding=row['min_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                        long_ex,
+                        short_ex,
+                        sym
+                    )
+                    diff_f=(f_long-f_short)/f_long*100
 
-                        # Берём только пары, где фандинг ≥ заданного порога (у тебя demanded_funding_rev в ПРЦ)
-                        df_candidates = df_result[df_result["funding_diff_metric"] >= self.demanded_funding_rev].copy()
-                        if df_candidates.empty:
-                            print("Подходящих пар по фандингу нет — ждём следующий час.")
-                            print(f"Код занял времени {time_finish-time_start:.2f} секунд")
-                            continue
+                #если время разное, ищем биржу с лучшим diff
+                #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['max_rate']>0:
+                    short_ex=df_result.iloc[i]['max_exchange']
+                    long_ex=df_result.iloc[i]['min_exchange']
+                    short_funding=row['max_rate']
+                    long_funding=row['min_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                    long_ex,
+                    short_ex,
+                    df_result.iloc[i]['symbol']
+                )
+                    diff_f=(f_long-f_short)/f_long*100
+                elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['max_rate']<=0:
+                    long_funding=row['max_rate']
+                    short_funding=row['min_rate']
+                    short_ex=df_result.iloc[i]['min_exchange']
+                    long_ex=df_result.iloc[i]['max_exchange']
+                    f_long, f_short = self.get_prices_parallel(
+                    long_ex,
+                    short_ex,
+                    df_result.iloc[i]['symbol']
+                ) 
 
-                        # Чтобы не долбить API сотней запросов в секунду — ограничим топом, например 5 штук
-                        MAX_CANDIDATES = 5
-                        df_candidates = df_candidates.head(MAX_CANDIDATES)
-
-                        candidates: List[dict] = []
-
-                        for _, row in df_candidates.iterrows():
-                            sym = row["symbol"]
-
-                            # ---------- определяем, где long, где short, и какие ставки ----------
-                            # ВАЖНО: здесь мы только выбираем биржи/стороны и фандинги.
-                            if row["min_funding_time"] == row["max_funding_time"]:
-                                # оба фандинга в одно время → классический случай:
-                                long_ex      = row["min_exchange"]
-                                short_ex     = row["max_exchange"]
-                                long_funding = row["min_rate"]
-                                short_funding= row["max_rate"]
-                            elif row["min_funding_time"] > row["max_funding_time"] and row["max_rate"] > 0:
-                                # max_rate позже и положительный → выгоднее шортить max_exchange
-                                short_ex     = row["max_exchange"]
-                                long_ex      = row["min_exchange"]
-                                short_funding= row["max_rate"]
-                                long_funding = row["min_rate"]
-                            elif row["min_funding_time"] > row["max_funding_time"] and row["max_rate"] <= 0:
-                                # max_rate позже, но ≤0 → выгоднее лонговать max_exchange
-                                long_ex      = row["max_exchange"]
-                                short_ex     = row["min_exchange"]
-                                long_funding = row["max_rate"]
-                                short_funding= row["min_rate"]
-                            elif row["min_funding_time"] < row["max_funding_time"] and row["min_rate"] > 0:
-                                # min_rate раньше и >0 → выгоднее лонговать max_exchange, шортить min_exchange
-                                long_ex      = row["max_exchange"]
-                                short_ex     = row["min_exchange"]
-                                long_funding = row["max_rate"]
-                                short_funding= row["min_rate"]
-                            else:
-                                # fallback — как в базовом случае
-                                long_ex      = row["min_exchange"]
-                                short_ex     = row["max_exchange"]
-                                long_funding = row["min_rate"]
-                                short_funding= row["max_rate"]
-
-                            # не открываем, если любая из бирж уже участвует в активной позиции
-                            if self.pair_already_logged(long_ex, short_ex, logs_df, sym):
-                                print(f"Не берём {sym}: биржа уже используется в активной позиции ({long_ex} ↔ {short_ex})")
-                                continue
-
-                            # ---------- цены на 55-й минуте (фактически — сразу после парсинга) ----------
-                            f_long_55, f_short_55 = self.get_prices_parallel(long_ex, short_ex, sym)
-                            stored_diff = f_long_55 - f_short_55
-
-                            cand = {
-                                "symbol": sym,
-                                "long_ex": long_ex,
-                                "short_ex": short_ex,
-                                "long_funding": long_funding,
-                                "short_funding": short_funding,
-                                "funding_diff_metric": row["funding_diff_metric"],  # в %
-                                "best_long_price": f_long_55,
-                                "best_short_price": f_short_55,
-                                "stored_diff": stored_diff,   # спред цен long-short на момент 55
-                                "opened": False,
-                            }
-                            candidates.append(cand)
-
-                        if not candidates:
-                            print("После фильтрации не осталось кандидатов для входа.")
-                            print(f"Код занял времени {time_finish-time_start:.2f} секунд")
-                            continue
-
-                        print("Кандидаты на вход:", [c["symbol"] for c in candidates])
-
-                        # ---------- окно поиска лучшей точки входа: до 59:30 ----------
-                        now = datetime.now()
-                        end_time = now.replace(
-                            minute=self.minutes_for_start_parse + 4,  # 55 + 4 = 59
-                            second=30,
-                            microsecond=0
+                #Отрываем лонг для фандинга, шорт- ищем лучшую биржу по цене   
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['min_rate']>0:
+                    long_funding=row['max_rate']
+                    short_funding=row['min_rate']
+                    short_ex=df_result.iloc[i]['min_exchange']
+                    long_ex= df_result.iloc[i]['max_exchange']
+                    f_long, f_short = self.get_prices_parallel(
+                            long_ex,
+                            short_ex,
+                            df_result.iloc[i]['symbol']
                         )
-                        if now > end_time:
-                            # если вдруг код до этого шёл очень долго, чтобы не зависнуть — считаем окно закрытым
-                            end_time = now
+                    diff_f=(f_long-f_short)/f_long*100
+                elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']and df_result.iloc[i]['min_rate']<=0:
+                    short_ex=df_result.iloc[i]['max_exchange']
+                    long_ex= df_result.iloc[i]['min_exchange']
+                    long_funding=row['min_rate']
+                    short_funding=row['max_rate']
+                    f_long, f_short = self.get_prices_parallel(
+                            long_ex,
+                            short_ex,
+                            df_result.iloc[i]['symbol']
+                        )
+                    diff_f=(f_long-f_short)/f_long*100
 
-                        # С 55:xx до 59:30 каждую секунду смотрим цены по всем кандидатам
-                        while datetime.now() <= end_time and any(not c["opened"] for c in candidates):
-                            for cand in candidates:
-                                if cand["opened"]:
-                                    continue
+                if self.pair_already_logged(long_ex, short_ex, logs_df,sym):
+                    print(f"Не открываем, ⏭️ биржа из пары уже в используется: {long_ex} ↔ {short_ex}")
+                    self.tg_send(f"Не открываем, ⏭️ биржа из пары уже в используется: {long_ex} ↔ {short_ex}")
+                    i += 1
+                    continue
+                #Проверяем каждую биржу и пару, может что то есть в current_possibilities. Тогда что то открывать не надо уже. Проверка доход из current_possibilities>possible_funding-0.5. Тогда используем current_possibilities
+                
+                mask=logs_df_c[logs_df_c['status']=='active']
+                mask_long_eq=mask[(mask['long_exchange']==long_ex)&(mask['symbol']==sym)]
+                mask_short_eq=mask[(mask['short_exchange']==short_ex)&(mask['symbol']==sym)]
+                if diff_f>df_result.iloc[i]['funding_diff_metric'] and len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
+                    new_symbols.append(sym)
+                    self.tg_send(f"Разница между биржами {diff_f:.4f} > Дохода от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}")
+                        
+                if diff_f>df_result.iloc[i]['funding_diff_metric'] and df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                    mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
+                    self.tg_send(f"Не открываем. Разница {diff_f:.4f} > Доходп от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}" )
+                    for idx, row in mask_active_rest.iterrows():
+                        close_rest_sym=row['symbol']
+                        close_rest_long=row['long_exchange']
+                        close_rest_short=row['short_exchange']
+                        print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
+                        self.tg_send(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
 
-                                sym     = cand["symbol"]
-                                long_ex = cand["long_ex"]
-                                short_ex= cand["short_ex"]
+                        await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
+                                self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
+                        logs_df.loc[idx, 'status'] = 'closed'
+                        logs_df.to_csv(self.logs_path, index=False)
+                    mask_active_syms=mask[mask['symbol'].isin(new_symbols)]
+                    for idx, row in mask_active_syms.iterrows():
+                        hold_sym=row['symbol']
+                        hold_long=row['long_exchange']
+                        hold_short=row['short_exchange']
+                        print(f'Оставляем позиции по {hold_sym} лонг на {hold_long}, шорт на {hold_short}')
+                        self.tg_send(f'Оставляем позиции по {hold_sym} лонг на {hold_long}, шорт на {hold_short}')
+                        logs_df.loc[idx, 'status'] = 'active'
+                        logs_df.to_csv(self.logs_path, index=False)
+                elif diff_f>df_result.iloc[i]['funding_diff_metric']:
+                    print(f'Не открываем по {sym}, разница между биржами {diff_f} больше потенциального дохода от фандинга {df_result.iloc[i]["funding_diff_metric"]}')
+                    self.tg_send(f'Не открываем по {sym}, разница между биржами {diff_f} больше потенциального дохода от фандинга {df_result.iloc[i]["funding_diff_metric"]}')
+                
+                else:
+                    new_symbols.append(sym)
+                            
+                    #open_position
 
-                                f_long_now, f_short_now = self.get_prices_parallel(long_ex, short_ex, sym)
-                                diff_now = f_long_now - f_short_now
+                    if len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
+                        print(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
+                        self.tg_send(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
+                       
 
-                                # если старое f_long - f_short > (f_long_now - f_short_now),
-                                # значит спред уменьшился → нашли лучшую точку входа, сразу открываем
-                                if cand["stored_diff"] > diff_now:
-                                    print(
-                                        f"{sym}: нашли лучшую точку входа "
-                                        f"({cand['stored_diff']:.6f} → {diff_now:.6f}), открываем..."
+                    elif len(mask_long_eq)!=0:
+                        mask_logs_long = (mask['long_exchange'] == long_ex)
+                        if mask_logs_long.any():
+                            row = mask.loc[mask_logs_long].iloc[0]
+                            short_ex_close=row['short_exchange']
+                            sym_close=row['symbol']
+                            print(f'закрываем позицию по {sym_close}, шорт {short_ex_close}')
+                            self.tg_send(f'закрываем позицию по {sym_close}, шорт {short_ex_close}')
+                            print(f'Оставляем лонг {long_ex}')
+                            print(f'Открываем позицию по {sym}, шорт {short_ex}')
+                            self.tg_send(f'Открываем позицию по {sym}, шорт {short_ex}')
+                            qty = mask['qty']
+                            await self.c.close_order(symbol = sym_close, exchange=short_ex_close)
+                            await self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty)
+
+                    elif len(mask_short_eq)!=0:
+                        mask_logs_short = (mask['short_exchange'] == short_ex)
+                        if mask_logs_short.any():
+                            row = mask.loc[mask_logs_short].iloc[0]
+                            long_ex_close=row['long_exchange']
+                            sym_close=row['symbol']
+                            print(f'закрываем позицию по {sym_close}, лонг {long_ex_close}')
+                            self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close}')
+                            print(f'Оставляем шорт {short_ex}')
+                            print(f'Отрываем лонг {long_ex}')
+                            self.tg_send(f'Отрываем лонг {long_ex}')
+                            qty = mask['qty']
+                            await self.c.close_order(symbol = sym_close, exchange=long_ex_close)
+                            await self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty)
+                    #Ищем позицию по с парой нужных нам бирж, закрываем ее.
+                    else:
+                        if len(mask)!=0:
+                            
+                            mask_logs = (
+                                    (
+                                        mask['long_exchange'].isin([long_ex, short_ex]) |
+                                        mask['short_exchange'].isin([long_ex, short_ex])
                                     )
-                                    cand["best_long_price"]  = f_long_now
-                                    cand["best_short_price"] = f_short_now
-                                    cand["stored_diff"]      = diff_now
-
-                                    await self._open_candidate_at_prices(cand, logs_df)
-                                    cand["opened"] = True
-
-                            await asyncio.sleep(1)
-
-                        # Окно закончилось — те, кто так и не «улучшился», открываем по спреду 55-й минуты
-                        for cand in candidates:
-                            if not cand["opened"]:
-                                print(
-                                    f"{cand['symbol']}: лучшая точка входа не появилась до {end_time.strftime('%H:%M:%S')}, "
-                                    f"открываем по ценам 55-й минуты (спред={cand['stored_diff']:.6f})."
+                                    & ~mask['symbol'].isin(new_symbols)
                                 )
-                                await self._open_candidate_at_prices(cand, logs_df)
 
-                        print(f"Код занял времени {time_finish-time_start:.2f} секунд")
-           
+                            if not mask.loc[mask_logs].empty:
+                                for _, row in mask.loc[mask_logs].iterrows():
+                                    long_ex_close=row['long_exchange']
+                                    short_ex_close=row['short_exchange']
+                                    sym_close=row['symbol']
+                                    print(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+                                    self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close} , шорт {short_ex_close}')
+
+                                    await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
+                                    self.c.close_order(sym_close,short_ex_close))
+                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                                await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            elif sym in mask['symbol'].values:
+                                row = mask.loc[mask['symbol'] == sym].iloc[0]
+                                long_ex_close = row['long_exchange']
+                                short_ex_close = row['short_exchange']
+                                print(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
+                                self.tg_send(f'закрываем позицию по {sym}, лонг {long_ex_close} , шорт {short_ex_close}')
+
+                                await asyncio.gather(self.c.close_order(symbol=sym,exchange=long_ex_close),
+                                    self.c.close_order(symbol=sym,exchange=short_ex_close))
+                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                                await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            else:
+                                qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                                print("qty = ", qty)
+                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
+                                await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                        else:
+                            qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
+                            print("qty = ", qty)
+                            await asyncio.gather(
+                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
+                            self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
+
+                    while True:
+                        pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
+                        pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
+                        long_price = float(pos_long['entry_price'])
+                        short_price = float(pos_short['entry_price'])
+                        if long_price and short_price:
+                            break
+
+                    new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        "symbol": df_result.iloc[i]['symbol'],
+                        "long_exchange": long_ex,
+                        "short_exchange":short_ex,
+                        "long_funding": long_funding,
+                        "short_funding":short_funding,
+                        "possible_revenue":df_result.iloc[i]['funding_diff_metric'],
+                        "long_price":long_price,
+                        "short_price":short_price,
+                        'diff':diff_f,
+                        'qty': qty,
+                        "status":'active'
+                        }
+                    
+                    if df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                        mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
+                        for idx, row in mask_active_rest.iterrows():
+                            close_rest_sym=row['symbol']
+                            close_rest_long=row['long_exchange']
+                            close_rest_short=row['short_exchange']
+                            print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
+                            await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
+                                self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
+                            logs_df.loc[idx, 'status'] = 'closed'
+                    new_row_df=pd.DataFrame([new_row])
+
+                    logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
+                    if os.path.exists(self.logs_path):
+                        new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
+                    else:
+                        logs_df.to_csv(self.logs_path, index=False)   
+                i+=1                   
+            print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
     async def run_window(self):
-        self.confirmations = {}
-        self.avg_diff = {}  
+        self.confirmations = {}      
         while True:
             now = datetime.now()
             seconds_15 = now.minute
@@ -1688,11 +1706,7 @@ class Logic():
                         short_price = float(short_pos['market_price'])
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        if not symbol in self.avg_diff:
-                            self.avg_diff[symbol] = []
-                        self.avg_diff[symbol].append(current_old_diff)
-                        print(statistics.fmean(self.avg_diff[symbol]))
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4-0.8 * possible_revenue
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
@@ -1727,7 +1741,6 @@ class Logic():
                                 (logs_df['status'] == 'active')
                             )
                             logs_df.loc[mask_close, 'status'] = 'closed'
-                            del self.avg_diff[symbol]
                             try:
                                 logs_df.to_csv(self.logs_path, index=False)
                             except Exception as e:
