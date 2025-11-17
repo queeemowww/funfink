@@ -6,7 +6,10 @@ from typing import Any, Dict, List
 
 import httpx
 import pandas as pd
+import ssl
+import certifi
 
+SSL_CTX = ssl.create_default_context()
 
 class Parsing():
     def __init__(self):
@@ -58,7 +61,7 @@ class Parsing():
         return "trading"
 
     def out_path(self, ext: str) -> str:
-        os.makedirs(r"C:\Users\User\my\py\funding_pars\data", exist_ok=True)
+        os.makedirs("data/data", exist_ok=True)
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
         return os.path.join("data", f"pairs_{ts}.{ext}")
 
@@ -290,71 +293,71 @@ class Parsing():
 
     # ---------- HTX (Huobi) ----------
 
-    async def htx_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-        """
-        HTX (Huobi) USDT-маржинальные перпы.
-        Оценка 24h объёма в USDT по batch_merged: amount * close.
-        Потом фильтр > 5M.
-        Coin-margined перпы не берём, чтобы не городить пересчёт.
-        """
-        out: List[Dict[str, Any]] = []
-        min_vol = self.MIN_24H_USDT
+    # async def htx_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
+    #     """
+    #     HTX (Huobi) USDT-маржинальные перпы.
+    #     Оценка 24h объёма в USDT по batch_merged: amount * close.
+    #     Потом фильтр > 5M.
+    #     Coin-margined перпы не берём, чтобы не городить пересчёт.
+    #     """
+    #     out: List[Dict[str, Any]] = []
+    #     min_vol = self.MIN_24H_USDT
 
-        # тикеры linear-swap
-        url_ticks = "https://api.hbdm.com/linear-swap-ex/market/detail/batch_merged"
-        data_ticks = await self.fetch_json(client, url_ticks, params={})
-        ticks = (data_ticks.get("ticks") or data_ticks.get("data") or [])
-        vol_map: Dict[str, float] = {}
-        for t in ticks:
-            cc = t.get("contract_code")
-            if not cc:
-                continue
-            if not str(cc).endswith("USDT"):
-                continue
-            try:
-                amount = float(t.get("amount") or 0.0)
-            except (TypeError, ValueError):
-                amount = 0.0
-            try:
-                close = float(t.get("close") or 0.0)
-            except (TypeError, ValueError):
-                close = 0.0
-            vol = amount * close  # оценка объёма в USDT
-            vol_map[cc] = vol
+    #     # тикеры linear-swap
+    #     url_ticks = "https://api.hbdm.com/linear-swap-ex/market/detail/batch_merged"
+    #     data_ticks = await self.fetch_json(client, url_ticks, params={})
+    #     ticks = (data_ticks.get("ticks") or data_ticks.get("data") or [])
+    #     vol_map: Dict[str, float] = {}
+    #     for t in ticks:
+    #         cc = t.get("contract_code")
+    #         if not cc:
+    #             continue
+    #         if not str(cc).endswith("USDT"):
+    #             continue
+    #         try:
+    #             amount = float(t.get("amount") or 0.0)
+    #         except (TypeError, ValueError):
+    #             amount = 0.0
+    #         try:
+    #             close = float(t.get("close") or 0.0)
+    #         except (TypeError, ValueError):
+    #             close = 0.0
+    #         vol = amount * close  # оценка объёма в USDT
+    #         vol_map[cc] = vol
 
-        # USDT-margined perpetuals
-        url_linear = "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info"
-        data_l = await self.fetch_json(client, url_linear)
-        lst_l = await self.safe_get(data_l, "data", default=[]) or []
-        for it in lst_l:
-            status = it.get("contract_status")
-            if status != 1:  # 1 = торгуется
-                continue
+    #     # USDT-margined perpetuals
+    #     url_linear = "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info"
+    #     data_l = await self.fetch_json(client, url_linear)
+    #     lst_l = await self.safe_get(data_l, "data", default=[]) or []
+    #     for it in lst_l:
+    #         status = it.get("contract_status")
+    #         if status != 1:  # 1 = торгуется
+    #             continue
 
-            sym = it.get("contract_code")
-            if not sym:
-                continue
+    #         sym = it.get("contract_code")
+    #         if not sym:
+    #             continue
 
-            vol_usdt = vol_map.get(sym, 0.0)
-            if vol_usdt < min_vol:
-                continue
+    #         vol_usdt = vol_map.get(sym, 0.0)
+    #         if vol_usdt < min_vol:
+    #             continue
 
-            base = sym.split("-")[0]
-            out.append({
-                "exchange": "htx",
-                "symbol": sym,
-                "base": base,
-                "quote": "USDT",
-                "contract_type": "perpetual",
-                "margin_asset": "USDT",
-                "settle_asset": "USDT",
-                "linear_inverse": "linear",
-                "status": self.norm_status("trading"),
-                "funding_interval_h": 8,
-                "raw": it,
-            })
+    #         base = sym.split("-")[0]
+    #         out.append({
+    #             "exchange": "htx",
+    #             "symbol": sym,
+    #             "base": base,
+    #             "quote": "USDT",
+    #             "contract_type": "perpetual",
+    #             "margin_asset": "USDT",
+    #             "settle_asset": "USDT",
+    #             "linear_inverse": "linear",
+    #             "status": self.norm_status("trading"),
+    #             "funding_interval_h": 8,
+    #             "raw": it,
+    #         })
 
-        return out
+    #     return out
 
     # ---------- Главный сборщик ----------
 
@@ -363,8 +366,7 @@ class Parsing():
             funcs = [
                 ("bybit", self.bybit_pairs(client)),
                 ("okx", self.okx_pairs(client)),
-                ("bitget", self.bitget_pairs(client)),
-                ("htx", self.htx_pairs(client)),
+                ("bitget", self.bitget_pairs(client))
             ]
             tasks = [f for _, f in funcs]
             names = [n for n, _ in funcs]
