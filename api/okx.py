@@ -675,7 +675,6 @@ class OKXAsyncClient:
             params["instId"] = to_okx_inst_id(symbol)
 
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
-        print(raw)
         items = raw.get("data") or []
         result: List[dict] = []
 
@@ -747,7 +746,6 @@ class OKXAsyncClient:
                     usdt_str = _fmt_decimal(usdt_val)
                 else:
                     usdt_str = _fmt_decimal(_d(notional_usd))
-                print(avg_px)
                 result.append({
                     "opened_at": opened_at,
                     "symbol": coin,

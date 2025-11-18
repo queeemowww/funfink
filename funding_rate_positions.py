@@ -1375,7 +1375,7 @@ class Logic():
                     short_ex,
                     sym
                 )
-                diff_f=(f_long-f_short)/f_long*100
+                diff_f=(f_long-f_short)/f_short*100
 
                 #если время разное, ищем биржу с лучшим diff
                 if df_result.iloc[i]['min_funding_time']==df_result.iloc[i]['max_funding_time']:
@@ -1388,7 +1388,7 @@ class Logic():
                         short_ex,
                         sym
                     )
-                    diff_f=(f_long-f_short)/f_long*100
+                    diff_f=(f_long-f_short)/f_short*100
 
                 #если время разное, ищем биржу с лучшим diff
                 #Отрываем шорт для фандинга, лонг- ищем лучшую биржу по цене
@@ -1402,7 +1402,7 @@ class Logic():
                     short_ex,
                     df_result.iloc[i]['symbol']
                 )
-                    diff_f=(f_long-f_short)/f_long*100
+                    diff_f=(f_long-f_short)/f_short*100
                 elif df_result.iloc[i]['min_funding_time']>df_result.iloc[i]['max_funding_time'] and df_result.iloc[i]['max_rate']<=0:
                     long_funding=row['max_rate']
                     short_funding=row['min_rate']
@@ -1425,7 +1425,7 @@ class Logic():
                             short_ex,
                             df_result.iloc[i]['symbol']
                         )
-                    diff_f=(f_long-f_short)/f_long*100
+                    diff_f=(f_long-f_short)/f_short*100
                 elif df_result.iloc[i]['min_funding_time']<df_result.iloc[i]['max_funding_time']and df_result.iloc[i]['min_rate']<=0:
                     short_ex=df_result.iloc[i]['max_exchange']
                     long_ex= df_result.iloc[i]['min_exchange']
@@ -1436,7 +1436,7 @@ class Logic():
                             short_ex,
                             df_result.iloc[i]['symbol']
                         )
-                    diff_f=(f_long-f_short)/f_long*100
+                    diff_f=(f_long-f_short)/f_short*100
 
                 if self.pair_already_logged(long_ex, short_ex, logs_df,sym):
                     print(f"Не открываем, ⏭️ биржа из пары уже в используется: {long_ex} ↔ {short_ex}")
@@ -1564,8 +1564,8 @@ class Logic():
                             else:
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
                                 print("qty = ", qty)
-                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
-                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
+                                print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, diff_f = {diff_f}')
+                                self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}, diff_f = {diff_f}')
                                 await asyncio.gather(
                                 self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
                                 self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
