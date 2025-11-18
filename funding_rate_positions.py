@@ -1483,8 +1483,9 @@ class Logic():
                     new_symbols.append(sym)
                             
                     #open_position
-
+                    leave = False
                     if len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
+                        leave = True
                         print(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
                         self.tg_send(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
                        
@@ -1585,38 +1586,38 @@ class Logic():
                         short_price = float(pos_short['entry_price'])
                         if long_price and short_price:
                             break
+                    if not leave:
+                        new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                            "symbol": df_result.iloc[i]['symbol'],
+                            "long_exchange": long_ex,
+                            "short_exchange":short_ex,
+                            "long_funding": long_funding,
+                            "short_funding":short_funding,
+                            "possible_revenue":df_result.iloc[i]['funding_diff_metric'],
+                            "long_price":long_price,
+                            "short_price":short_price,
+                            'diff':diff_f,
+                            'qty': qty,
+                            "status":'active'
+                            }
+                        
+                        if df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                            mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
+                            for idx, row in mask_active_rest.iterrows():
+                                close_rest_sym=row['symbol']
+                                close_rest_long=row['long_exchange']
+                                close_rest_short=row['short_exchange']
+                                print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
+                                await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
+                                    self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
+                                logs_df.loc[idx, 'status'] = 'closed'
+                        new_row_df=pd.DataFrame([new_row])
 
-                    new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                        "symbol": df_result.iloc[i]['symbol'],
-                        "long_exchange": long_ex,
-                        "short_exchange":short_ex,
-                        "long_funding": long_funding,
-                        "short_funding":short_funding,
-                        "possible_revenue":df_result.iloc[i]['funding_diff_metric'],
-                        "long_price":long_price,
-                        "short_price":short_price,
-                        'diff':diff_f,
-                        'qty': qty,
-                        "status":'active'
-                        }
-                    
-                    if df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
-                        mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
-                        for idx, row in mask_active_rest.iterrows():
-                            close_rest_sym=row['symbol']
-                            close_rest_long=row['long_exchange']
-                            close_rest_short=row['short_exchange']
-                            print(f'Закрываем то, что осталось и не используется по {close_rest_sym} лонг на {close_rest_long}, шорт на {close_rest_short}')
-                            await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
-                                self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
-                            logs_df.loc[idx, 'status'] = 'closed'
-                    new_row_df=pd.DataFrame([new_row])
-
-                    logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
-                    if os.path.exists(self.logs_path):
-                        new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
-                    else:
-                        logs_df.to_csv(self.logs_path, index=False)   
+                        logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
+                        if os.path.exists(self.logs_path):
+                            new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
+                        else:
+                            logs_df.to_csv(self.logs_path, index=False)   
                 i+=1                   
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
@@ -1674,7 +1675,12 @@ class Logic():
                                 # Запись в новые поля (как ты просил)
                                 logs_df.loc[idx, "long_funding"]  = long_last_funding
                                 logs_df.loc[idx, "short_funding"] = short_last_funding
-                                logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
+                                if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
+                                    print("same_hr")
+                                    logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
+                                else:
+                                    print("different _hr", row["possible_revenue"] + abs(long_last_funding - short_last_funding))
+                                    logs_df.loc[idx, "possible_revenue"] = row["possible_revenue"] + abs(long_last_funding - short_last_funding)
                             except Exception as e_row:
                                 print(f"Ошибка при проверке {logs_df.loc[idx].get('symbol','?')}: {e_row}")
 
