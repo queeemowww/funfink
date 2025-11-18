@@ -1720,7 +1720,7 @@ class Logic():
                         else:
                             self.confirmations[symbol] = 0
                         print(self.confirmations[symbol])
-                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 3:
+                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 10:
                             print(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             self.tg_send(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             await asyncio.gather(
