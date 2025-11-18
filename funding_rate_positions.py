@@ -167,6 +167,7 @@ class Logic():
      # загружаем переменные из .env
 
     #Подставь свои директории
+        self.leave = False
         self.c = Calc()
         self.size = 60
         self.balance = {
@@ -1126,7 +1127,8 @@ class Logic():
             # df_pairs = await asyncio.to_thread(pd.read_csv(df_pairs_dir))
             logs_df=self.load_logs()
             logs_df_c=logs_df.copy()
-            logs_df['status']='closed'
+            if not self.leave:
+                logs_df['status']='closed'
             
             df = await self.collect_funding(df_pairs)
             # Сохраняем
@@ -1483,9 +1485,9 @@ class Logic():
                     new_symbols.append(sym)
                             
                     #open_position
-                    leave = False
+                    self.leave = False
                     if len(mask_long_eq)!=0 and len(mask_short_eq)!=0:
-                        leave = True
+                        self.leave = True
                         print(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
                         self.tg_send(f'Оставляем шорт {short_ex} и лонг {long_ex} по {sym}')
                        
@@ -1586,7 +1588,7 @@ class Logic():
                         short_price = float(pos_short['entry_price'])
                         if long_price and short_price:
                             break
-                    if not leave:
+                    if not self.leave:
                         new_row={"ts_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                             "symbol": df_result.iloc[i]['symbol'],
                             "long_exchange": long_ex,
