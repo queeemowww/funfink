@@ -1,7 +1,3 @@
-f_long = 0.19053
-f_short = 0.19102
-short = 0.2103036065573771
-long = 0.21067622
-res = (f_long - long) / long - (f_short - short) / short
+from datetime import datetime
 
-print(res)
+print(datetime.strptime('2025-11-18 12:56:47', "%Y-%m-%d %H:%M:%S").hour)

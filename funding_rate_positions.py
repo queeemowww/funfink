@@ -188,7 +188,7 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=7
+        self.check_price_start=5
         self.check_price_finish=55
         self.minutes_for_start_parse = 56
         self.start_pars_pairs=2
@@ -1674,8 +1674,12 @@ class Logic():
                                 # Запись в новые поля (как ты просил)
                                 logs_df.loc[idx, "long_funding"]  = long_last_funding
                                 logs_df.loc[idx, "short_funding"] = short_last_funding
-                                logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
-
+                                if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
+                                    print("same_hr")
+                                    logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
+                                else:
+                                    print("different _hr", row["possible_revenue"] + abs(long_last_funding - short_last_funding))
+                                    logs_df.loc[idx, "possible_revenue"] = row["possible_revenue"] + abs(long_last_funding - short_last_funding)
                             except Exception as e_row:
                                 print(f"Ошибка при проверке {logs_df.loc[idx].get('symbol','?')}: {e_row}")
 
