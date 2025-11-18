@@ -189,7 +189,7 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=5
+        self.check_price_start=3
         self.check_price_finish=55
         self.minutes_for_start_parse = 56
         self.start_pars_pairs=2
@@ -1727,7 +1727,7 @@ class Logic():
                         else:
                             self.confirmations[symbol] = 0
                         print(self.confirmations[symbol])
-                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 10:
+                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
                             print(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             self.tg_send(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             await asyncio.gather(
