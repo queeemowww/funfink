@@ -1454,7 +1454,7 @@ class Logic():
                     new_symbols.append(sym)
                     self.tg_send(f"Разница между биржами {diff_f:.4f} > Дохода от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}")
                         
-                if diff_f>df_result.iloc[i]['funding_diff_metric'] and df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
+                if diff_f>df_result.iloc[i]['funding_diff_metric'] and df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev and f_long < f_short:
                     mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
                     self.tg_send(f"Не открываем. Разница {diff_f:.4f} > Доходп от фандинга {df_result.iloc[i]['funding_diff_metric']:.4f}" )
                     for idx, row in mask_active_rest.iterrows():
