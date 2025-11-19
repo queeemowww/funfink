@@ -190,8 +190,8 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=3
-        self.check_price_finish=58
-        self.minutes_for_start_parse = 59
+        self.check_price_finish=44
+        self.minutes_for_start_parse = 45
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -1505,7 +1505,12 @@ class Logic():
                             self.tg_send(f'Открываем позицию по {sym}, шорт {short_ex}')
                             qty = mask['qty']
                             await self.c.close_order(symbol = sym_close, exchange=short_ex_close)
-                            await self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty)
+                            try:
+                                await self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty)
+                            except Exception as e:
+                                print(e)
+                                await self.c.close_order(exchange=short_ex_close, symbol=sym_close)
+                                await self.c.close_order(exchange=long_ex_close, symbol=sym_close)
 
                     elif len(mask_short_eq)!=0:
                         mask_logs_short = (mask['short_exchange'] == short_ex)
@@ -1520,7 +1525,13 @@ class Logic():
                             self.tg_send(f'Отрываем лонг {long_ex}')
                             qty = mask['qty']
                             await self.c.close_order(symbol = sym_close, exchange=long_ex_close)
-                            await self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty)
+                            try:
+                                await self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty)
+                            except Exception as e:
+                                print(e)
+                                await self.c.close_order(exchange=short_ex_close, symbol=sym_close)
+                                await self.c.close_order(exchange=long_ex_close, symbol=sym_close)
+
                     #Ищем позицию по с парой нужных нам бирж, закрываем ее.
                     else:
                         if len(mask)!=0:
@@ -1546,9 +1557,15 @@ class Logic():
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
-                                await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                try:
+                                    await asyncio.gather(
+                                    self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                    self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                except Exception as e:
+                                    print(e)
+                                    await self.c.close_order(exchange=long_ex, symbol=sym)
+                                    await self.c.close_order(exchange=short_ex, symbol=sym)
+
                             elif sym in mask['symbol'].values:
                                 row = mask.loc[mask['symbol'] == sym].iloc[0]
                                 long_ex_close = row['long_exchange']
@@ -1561,23 +1578,38 @@ class Logic():
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
-                                await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                try:
+                                    await asyncio.gather(
+                                    self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                    self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                except Exception as e:
+                                    print(e)
+                                    await self.c.close_order(exchange=long_ex, symbol=sym)
+                                    await self.c.close_order(exchange=short_ex, symbol=sym)
                             else:
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
                                 print("qty = ", qty)
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, diff_f = {diff_f}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}, diff_f = {diff_f}')
-                                await asyncio.gather(
-                                self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
-                                self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                try:
+                                    await asyncio.gather(
+                                    self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
+                                    self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                                except Exception as e:
+                                    print(e)
+                                    await self.c.close_order(exchange=long_ex, symbol=sym)
+                                    await self.c.close_order(exchange=short_ex, symbol=sym)
                         else:
                             qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
                             print("qty = ", qty)
-                            await asyncio.gather(
+                            try:
+                                await asyncio.gather(
                                 self.c.open_order(direction='long',symbol=sym,exchange=long_ex, size=qty),
                                 self.c.open_order(direction='short',symbol=sym,exchange=short_ex, size=qty))
+                            except Exception as e:
+                                print(e)
+                                await self.c.close_order(exchange=long_ex, symbol=sym)
+                                await self.c.close_order(exchange=short_ex, symbol=sym)
                             print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                             self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
 
@@ -1713,7 +1745,7 @@ class Logic():
                         short_price = float(short_pos['market_price'])
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 45 else 0.4 - 0.8 * possible_revenue
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 35 else 0.4 - 0.8 * possible_revenue
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
