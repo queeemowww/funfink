@@ -17,9 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from api.bitget import BitgetAsyncClient
 from api.bybit import BybitAsyncClient
 from api.okx import OKXAsyncClient
-from api.gate import GateAsyncFuturesClient
-from api.htx import HTXAsyncClient
-from api.kucoin import KucoinAsyncFuturesClient
+from api.binance import BinanceAsyncFuturesClient
 import warnings
 import re
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -63,7 +61,8 @@ KUCOIN_API_KEY = os.getenv('KUCOIN_API_KEY')
 KUCOIN_API_SECRET = os.getenv('KUCOIN_API_SECRET')
 KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 
-
+BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
+BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 
 class Calc():
     def __init__(self):
@@ -71,10 +70,8 @@ class Calc():
         self.dict = {
             "bitget": BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE),
             "bybit": BybitAsyncClient(BYBIT_API_KEY, BYBIT_API_SECRET, testnet=False),
-            "okx": OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE),
-            "gate": GateAsyncFuturesClient(GATE_API_KEY, GATE_API_SECRET),
-            "htx": HTXAsyncClient(HTX_API_KEY, HTX_API_SECRET),
-            "kucoin_futures": KucoinAsyncFuturesClient(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+            "okx": OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE), 
+            "binance": BinanceAsyncFuturesClient(BINANCE_API_KEY, BINANCE_API_SECRET)
         }
 
 
@@ -174,9 +171,7 @@ class Logic():
             "okx": 0,
             "bitget": 0,
             "bybit": 0,
-            "gate": 0,
-            "htx": 0,
-            "kucoin_futures": 0
+            "binance": 0
         }
         self.new_balance = 1
         self.all_balance = 1
@@ -322,16 +317,10 @@ class Logic():
                 new_ticker= f"{base}{quote}_UMCBL"
             elif exchange=="bybit":
                 new_ticker= f"{base}{quote}"
-            elif exchange=="gate":
-                new_ticker= f"{base}_{quote}"
             elif exchange=="okx":
                 new_ticker= f"{base}-{quote}-SWAP"
-            elif exchange=="htx":
-                new_ticker= f"{base}-{quote}"
-            elif exchange=="mexc":
-                new_ticker= f"{base}_{quote}"
-            elif exchange=="kucoin_futures":
-                new_ticker= f"{base}{quote}M"
+            elif exchange=="binance":                      # 👈 ДОБАВИЛИ
+                new_ticker = f"{base}{quote}"              #   BTCUSDT
             return new_ticker
         else:
             quote='USDT'
@@ -339,17 +328,12 @@ class Logic():
                 new_ticker= f"{ticker}{quote}_UMCBL"
             elif exchange=="bybit":
                 new_ticker= f"{ticker}{quote}"
-            elif exchange=="gate":
-                new_ticker= f"{ticker}_{quote}"
             elif exchange=="okx":
                 new_ticker= f"{ticker}-{quote}-SWAP"
-            elif exchange=="htx":
-                new_ticker= f"{ticker}-{quote}"
-            elif exchange=="mexc":
-                new_ticker= f"{ticker}_{quote}"
-            elif exchange=="kucoin_futures":
-                new_ticker= f"{ticker}{quote}M"
+            elif exchange=="binance":                      # 👈 ДОБАВИЛИ
+                new_ticker = f"{ticker}{quote}"            #   BTCUSDT
             return new_ticker
+
     #логировангие пары
     def pair_already_logged(self,long_ex, short_ex, logs_df, sym):
                 """Проверяем, что пара бирж уже есть в логе (независимо от порядка)."""
@@ -461,22 +445,6 @@ class Logic():
                 print(f"Ошибка получения цены с bybit ({symbol}): {e}")
         return 100.0
 
-
-    def get_last_price_gate(self,symbol: str) -> float:
-        flag = 0
-        while flag < 5:
-            try:
-            # USDT-margined futures
-                url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
-                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
-                r.raise_for_status()
-                flag = 5
-                return float(r.json()[0]["last"])
-            except Exception as e:
-                print(f"Ошибка получения цены с gate ({symbol}): {e}")
-                flag+=1
-                return 100
-
     def get_last_price_okx(self,symbol: str) -> float:
         flag = 0
         while flag < 5:
@@ -490,76 +458,24 @@ class Logic():
                 print(f"Ошибка получения цены с okx ({symbol}): {e}")
                 flag+=1
                 return 100
-    
 
-    def get_last_price_htx(self, symbol: str) -> float:
-        flag = 0
-        while flag < 5:
+    def get_last_price_binance(self, symbol: str) -> float:
+        """
+        Binance USDT-perp futures.
+        GET https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT
+        """
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        for _ in range(5):
             try:
-                url = "https://api.hbdm.com/linear-swap-ex/market/detail/merged"
-                try:
-                    r = requests.get(
-                        url,
-                        params={"contract_code": symbol},
-                        timeout=10,
-                        verify=SYSTEM_CA   # verify по умолчанию = True → системный CA
-                    )
-                except:
-                    r = requests.get(
-                        url,
-                        params={"contract_code": symbol},
-                        timeout=10   # verify по умолчанию = True → системный CA
-                    )
-                r.raise_for_status()
-                flag = 5
-                return float(r.json()["tick"]["close"])
+                r = self.safe_get(url, params={"symbol": symbol}, timeout=10)
+                data = r.json()
+                price = data.get("price")
+                if price is None:
+                    raise ValueError(f"no data for binance symbol={symbol}: {data}")
+                return float(price)
             except Exception as e:
-                print(f"Ошибка получения цены с htx ({symbol}): {e}")
-                flag += 1
-                return 100
-
-
-    def get_last_price_mexc(self,symbol: str) -> float:
-        # MEXC futures/contract API
-        url = "https://contract.mexc.com/api/v1/contract/ticker"
-        flag = 0
-        while flag < 5:
-            try:
-                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
-                r.raise_for_status()
-                j = r.json()
-                
-                data = j.get("data")
-                if isinstance(data, list) and len(data) > 0:
-                    data = data[0]
-                elif isinstance(data, dict):
-                    pass  # уже словарь, оставляем
-                else:
-                    return 100 # нет данных
-                
-                # поле может быть "lastPrice" или "last"
-                price_str = data.get("lastPrice") or data.get("last")
-                flag=5
-                return float(price_str) if price_str else 100
-
-            except Exception as e:
-                flag+=1
-                print(f"Ошибка получения цены с MEXC ({symbol}): {e}")
-                return 100
-
-    def get_last_price_kucoin(self,symbol: str) -> float:
-        flag = 0
-        while flag < 5:
-            try:
-                url = "https://api-futures.kucoin.com/api/v1/ticker"
-                r = self.safe_get(url, params={"instId": symbol}, timeout=10)
-                r.raise_for_status()
-                flag = 5
-                return float(r.json()["data"]["price"])
-            except Exception as e:
-                flag+=1
-                print(f"Ошибка получения цены с kucoin ({symbol}): {e}")
-                return 100
+                print(f"Ошибка получения цены с binance ({symbol}): {e}")
+        return 100.0
 
 
     def get_futures_last_prices(self,exchange,universal_ticker: str) -> Dict[str, float]:
@@ -568,16 +484,10 @@ class Logic():
             price= self.get_last_price_bitget(symbol)
         elif exchange=="bybit":
             price= self.get_last_price_bybit(symbol)
-        elif exchange=="gate":
-            price= self.get_last_price_gate(symbol)
         elif exchange=="okx":
             price=self.get_last_price_okx(symbol)
-        elif exchange=="htx":
-            price= self.get_last_price_htx(symbol)
-        elif exchange=="mexc":
-            price= self.get_last_price_mexc(symbol)
-        elif exchange=="kucoin_futures":
-            price= self.get_last_price_kucoin(symbol)
+        elif exchange=="binance":                     # 👈 ДОБАВИЛИ
+            price=self.get_last_price_binance(symbol)
         
         return price
 
@@ -665,14 +575,8 @@ class Logic():
             return f"{base}{quote}_UMCBL"
         if ex == 'bybit':
             return f"{base}{quote}"
-        if ex == 'gate':
-            return f"{base}_{quote}"
         if ex == 'okx':
             return f"{base}-{quote}-SWAP"
-        if ex in ('htx', 'huobi'):
-            return f"{base}-{quote}"
-        if ex in ('kucoin_futures', 'kucoin'):
-            return f"{base}{quote}M"
         return f"{base}{quote}"
 
     async def _get_json(self, client: httpx.AsyncClient, url: str, params: dict | None = None, retries: int = 3) -> dict:
@@ -703,11 +607,6 @@ class Logic():
         symbol=symbol.replace('/','')
 
         ex = exchange.lower().strip()
-        if ex == 'huobi':
-            ex = 'htx'
-        if ex == 'kucoin':
-            ex = 'kucoin_futures'
-
         # универсальный символ -> формат биржи
         uni = self._normalize_universal(symbol)
         sym = self._to_exchange_symbol(ex, uni)
@@ -754,49 +653,17 @@ class Logic():
                     if arr:
                         return self._to_float(arr[0].get("fundingRate"))
                     return None
-
-                # ---- Gate.io ----
-                if ex == 'gate':
-                    # GET /api/v4/futures/{settle}/funding_rate?contract=BTC_USDT&limit=1
-                    # settle определяем из котировки (обычно usdt)
-                    settle = "usdt"
-                    url = f"https://api.gateio.ws/api/v4/futures/{settle}/funding_rate"
-                    params = {"contract": sym, "limit": 1}
+                
+                if ex == 'binance':
+                    # История фандинга: последняя завершённая ставка
+                    # GET /fapi/v1/fundingRate?symbol=BTCUSDT&limit=1
+                    url = "https://fapi.binance.com/fapi/v1/fundingRate"
+                    params = {"symbol": sym, "limit": 1}
                     data = await self._get_json(client, url, params)
-                    # ответ — список объектов с полем "r" (rate)
+                    # Binance возвращает список
                     if isinstance(data, list) and data:
-                        # "r" — строка с числом, например "0.0001"
-                        return self._to_float(data[0].get("r"))
+                        return self._to_float(data[0].get("fundingRate"))
                     return None
-
-                # ---- HTX (Huobi) ----
-                if ex == 'htx':
-                    # GET /linear-swap-api/v1/swap_historical_funding_rate?contract_code=BTC-USDT&page_index=1&page_size=1
-                    url = "https://api.hbdm.com/linear-swap-api/v1/swap_historical_funding_rate"
-                    params = {"contract_code": sym, "page_index": 1, "page_size": 1}
-                    data = await self._get_json(client, url, params)
-                    arr = (data.get("data") or {}).get("data") or data.get("data") or []
-                    # формат бывает как {"data":{"data":[...]}} или просто {"data":[...]}
-                    if isinstance(arr, dict):
-                        arr = arr.get("data") or []
-                    if arr:
-                        return self._to_float(arr[0].get("funding_rate")) 
-                    return None
-
-                # ---- KuCoin Futures ----
-                if ex == 'kucoin_futures':
-                    # История за 7 дней:
-                    # GET /api/v1/funding-rate?symbol=XBTUSDTM
-                    # Возвращает {"data":[{"timePoint":..., "value":"0.0001"}, ...]} (обычно по времени возр.)
-                    url = "https://api-futures.kucoin.com/api/v1/funding-rate"
-                    params = {"symbol": sym}
-                    data = await self._get_json(client, url, params)
-                    arr = data.get("data") or []
-                    if isinstance(arr, list) and arr:
-                        # берём последний элемент
-                        return self._to_float(arr[-1].get("value"))
-                    return None
-
                 # неизвестная биржа
                 return None
 
@@ -923,107 +790,54 @@ class Logic():
                 "raw_note": f"bitget_fail: {e}",
             }
 
-
-    async def fetch_mexc(self,client, row):
-        sym = row["symbol"]
-        
-
-        url = f"https://contract.mexc.com/api/v1/contract/funding_rate/{sym}"
-        last_exc = None
-
+    async def fetch_binance(self, client: httpx.AsyncClient, row: dict) -> dict:
+        """
+        Binance USDT-perp.
+        Используем premiumIndex:
+          GET /fapi/v1/premiumIndex?symbol=BTCUSDT
+        lastFundingRate — последняя ставка
+        nextFundingTime — время следующего фандинга (ms)
+        """
+        s = row["symbol"]
         try:
-            data = await self.fetch_json(client, url, {"symbol": sym})
-            # иногда ответ: {"data":{"resultList":[...]}} или {"data":[...]}
-            if data:
-                fr=data.get('data').get("fundingRate")
-        
-            
-                nft = self.to_dt_ms(data.get('data').get("nextSettleTime"))
+            data = await self.fetch_json(
+                client,
+                "https://fapi.binance.com/fapi/v1/premiumIndex",
+                {"symbol": s},
+            )
+
+            # API может вернуть dict или список dict'ов
+            if isinstance(data, list):
+                d = data[0] if data else {}
+            else:
+                d = data
+
+            fr  = self._to_float(d.get("lastFundingRate"))
+            nft = d.get("nextFundingTime")
+
             return {
-                "funding_rate": float(fr) if fr is not None else None,
+                "funding_rate": fr,
                 "next_funding_rate": None,
-                "funding_time": nft,
-                "raw_note": data,
+                # как и у Bybit — кладём сюда nextFundingTime,
+                # чтобы логика a_in_next/b_in_next работала с "следующим" часом
+                "funding_time": self.to_dt_ms(nft),
+                "next_funding_time": None,
+                "raw_note": None if fr is not None else "no_data",
             }
+
         except Exception as e:
-            last_exc = e
-            
+            return {
+                "funding_rate": None,
+                "next_funding_rate": None,
+                "funding_time": None,
+                "next_funding_time": None,
+                "raw_note": f"binance_fail: {e}",
+            }
 
-        return {"funding_rate": None, "next_funding_rate": None, "funding_time": None, "raw_note": f"mexc_fail: {last_exc}"}
-
-
-    async def fetch_kucoin_futures(self,client, row):
-        sym = row["symbol"]  # напр., XBTUSDTM
-        last_exc = None
-
-        # 1) Попробуем «текущую» (где доступно)
-        try:
-            cur = await self.fetch_json(client, f"https://api-futures.kucoin.com/api/v1/funding-rate/{sym}/current", {"symbol": sym})
-            
-            if cur:
-                fr=cur.get('data').get("value")
-                period=(cur.get('data').get("granularity"))/1000/60/60
-                
-                nft = self.to_dt_ms(cur.get('data').get("fundingTime"))
-                nft1 = self.to_dt_ms(cur.get('data').get("fundingTime")+cur.get('data').get("granularity"))
-                return {
-                    "funding_rate": float(fr),
-                    "next_funding_rate": None,
-                    "next_funding_time":nft1,
-                    "funding_time": nft,
-                    "raw_note": cur,
-                }
-        except Exception as e:
-            last_exc = e
-        return {"funding_rate": None, "next_funding_rate": None, "funding_time": None, "raw_note": f"kucoin_fail: {last_exc}"}
-
-    async def fetch_gateio(self,client: httpx.AsyncClient, row: dict) -> dict:
-        """
-        Gate.io: данные по контракту содержат текущий funding_rate и next_funding_time.
-        GET /api/v4/futures/{settle}/contracts/{contract}
-        где settle: usdt | btc | eth | gt | ...
-        символ контракта: обычно BTC_USDT
-        """
-        sym = row["symbol"]
-        settle = (row.get("settle_asset") or row.get("margin_asset") or "USDT").lower()
-        url = f"https://api.gateio.ws/api/v4/futures/{settle}/contracts/{sym}"
-        data = await self.fetch_json(client, url)
-        d = data if isinstance(data, dict) and "name" in data else data[0] if isinstance(data, list) else data
-        fr = d.get("funding_rate")
-        nft = d.get("funding_next_apply")
-        fi=  d.get("funding_interval")
-        return {
-            "funding_rate": float(fr) if fr is not None else None,
-            "next_funding_rate": None,
-            "funding_time": self.to_dt_ms1(nft),
-            'next_funding_time': self.to_dt_ms1(nft+fi),
-            "raw_note": d,
-        }
-
-    async def fetch_htx(self,client: httpx.AsyncClient, row: dict) -> dict:
-
-        sym = row["symbol"]
-        
-        base_url = "https://api.hbdm.com/linear-swap-api/v1/swap_funding_rate"
-        data = await self.fetch_json(client, base_url, {"contract_code": sym})
-        if data:
-            fr=data.get('data').get('funding_rate')
-            ft=self.to_dt_ms(data.get('data').get('funding_time'))
-            
-
-        # string "2025-10-07 08:00:00"
-        return {
-            "funding_rate": float(fr) if fr is not None else None,
-            "next_funding_rate": None,
-            "funding_time": self.ensure_str(ft),
-            "raw_note": data,
-        }
 
     def normalize_exchange_name(self,x: str) -> str:
         s = x.lower()
         # мелкие синонимы на всякий случай
-        if s in ("kucoin", "kucoin futures", "kucoin_futures"): s = "kucoin_futures"
-        if s in ("huobi", "htx"): s = "htx"
         return s
 
 
@@ -1033,10 +847,7 @@ class Logic():
             "bybit": self.fetch_bybit,
             "okx": self.fetch_okx,
             "bitget": self.fetch_bitget,
-            "mexc": self.fetch_mexc,
-            "kucoin_futures": self.fetch_kucoin_futures,
-            "gate": self.fetch_gateio,
-            "htx": self.fetch_htx,
+            "binance": self.fetch_binance
         }
         ex = self.normalize_exchange_name(row["exchange"])
         fn = FETCHER_MAP.get(ex)
@@ -1137,9 +948,6 @@ class Logic():
             df_funding11=df.copy()
             print("Saved:", out_csv)
             df_funding=df
-            df_funding = df_funding[df_funding['exchange'] != 'mexc']
-            df_funding = df_funding[df_funding['exchange'] != 'gate']
-            df_funding = df_funding[df_funding['exchange'] != 'kucoin_futures']
             df_funding=df_funding.dropna(subset=['funding_rate'])
             df_funding['symbol_u']=df_funding['symbol']
             df_funding['symbol']=df_funding['symbol_n']
@@ -1260,7 +1068,7 @@ class Logic():
             text=[]
             self.all_balance = 0
 
-            for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+            for ex in ['bybit', 'bitget', 'okx', 'binance']:
                 self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
                 self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
 
@@ -1270,9 +1078,7 @@ class Logic():
 🟠BYBIT: {self.balance.get('bybit'):.2f}\n
 🔵BITGET: {self.balance.get('bitget'):.2f}\n
 ⚫OKX: {self.balance.get('okx'):.2f}\n
-🟤HTX: {self.balance.get('htx'):.2f}\n
-⚪KUCOIN: {self.balance.get('kucoin_futures'):.2f}\n
-🟢GATE: {self.balance.get('gate'):.2f}\n\n 
+🟡BINANCE: {self.balance.get('binance'):.2f}\n
 🔥 Лучшая пара {analytical_df['symbol'].iloc[i]}\n\n""")
                 min_time = (analytical_df['min_funding_time'].iloc[i] + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
@@ -1291,9 +1097,6 @@ class Logic():
 
             #Функции для бота покупки
             df_funding11["symbol_n"] = df_funding11["symbol"].apply(self.normalize_symbol)
-            df_funding11=df_funding11[df_funding11['exchange']!='mexc']
-            df_funding11=df_funding11[df_funding11['exchange']!='gate']
-            df_funding11=df_funding11[df_funding11['exchange']!='kucoin_futures']
             df_funding11=df_funding11.dropna(subset=["funding_rate"])
             df_funding1 = df_funding11[['timestamp_utc','exchange','symbol','symbol_n','funding_rate','funding_time']].copy()
             df_funding1['funding_rate'] = df_funding1['funding_rate'] * 100
@@ -1302,12 +1105,6 @@ class Logic():
             df_funding1_s['funding_time'] = pd.to_datetime(df_funding1_s['funding_time'], utc=True, errors='coerce')
 
             df_result=result_sorted.copy()
-            df_result=df_result[df_result['min_exchange']!='mexc']
-            df_result=df_result[df_result['max_exchange']!='mexc']
-            df_result=df_result[df_result['min_exchange']!='gate']
-            df_result=df_result[df_result['max_exchange']!='gate']
-            df_result=df_result[df_result['min_exchange']!='kucoin_futures']
-            df_result=df_result[df_result['max_exchange']!='kucoin_futures']
             df_result['funding_diff_metric']=df_result['funding_diff_metric']*100
             df_result['max_rate']=df_result['max_rate']*100
             df_result['min_rate']=df_result['min_rate']*100
@@ -1352,7 +1149,7 @@ class Logic():
                         logs_df.loc[idx, 'status'] = 'active'
                     else:
                         idx = mask_active.index[e]
-                        for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+                        for ex in ['bybit', 'bitget', 'okx', "binance"]:
                             self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
                         self.profit = (self.new_balance - self.all_balance) / self.all_balance
                         self.tg_send(f'Разница в карман: {(self.profit *100):.2f}\n💰БАЛАНС: {self.new_balance:.2f} %\n\n Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
@@ -1496,6 +1293,7 @@ class Logic():
                         mask_logs_long = (mask['long_exchange'] == long_ex)
                         if mask_logs_long.any():
                             row = mask.loc[mask_logs_long].iloc[0]
+                            long_ex_close=row['long_exchange']
                             short_ex_close=row['short_exchange']
                             sym_close=row['symbol']
                             print(f'закрываем позицию по {sym_close}, шорт {short_ex_close}')
@@ -1517,6 +1315,7 @@ class Logic():
                         if mask_logs_short.any():
                             row = mask.loc[mask_logs_short].iloc[0]
                             long_ex_close=row['long_exchange']
+                            short_ex_close=row['short_exchange']
                             sym_close=row['symbol']
                             print(f'закрываем позицию по {sym_close}, лонг {long_ex_close}')
                             self.tg_send(f'закрываем позицию по {sym_close}, лонг {long_ex_close}')
@@ -1767,7 +1566,7 @@ class Logic():
                             self.c.close_order(symbol=symbol, exchange=short_ex)
                         )
                             self.new_balance = 0
-                            for ex in ['bybit', 'bitget', 'okx', 'gate', 'htx', 'kucoin_futures']:
+                            for ex in ['bybit', 'bitget', 'okx', 'binance']:
                                 self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
                             self.profit = (self.new_balance - self.all_balance) / self.all_balance
                             self.tg_send(f"💰БАЛАНС: {self.new_balance:.2f}\n\nПибыль: {self.profit:.2f}%")

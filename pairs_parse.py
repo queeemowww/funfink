@@ -9,7 +9,9 @@ import pandas as pd
 import ssl
 import certifi
 
-SSL_CTX = ssl.create_default_context()
+# Используем certifi, чтобы избежать проблем с SSL на сервере
+SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
 
 class Parsing():
     def __init__(self):
@@ -61,7 +63,7 @@ class Parsing():
         return "trading"
 
     def out_path(self, ext: str) -> str:
-        os.makedirs("data/data", exist_ok=True)
+        os.makedirs("data", exist_ok=True)
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
         return os.path.join("data", f"pairs_{ts}.{ext}")
 
@@ -176,7 +178,6 @@ class Parsing():
             if not inst_id:
                 continue
 
-            # volCcy24h — количество базовой монеты за 24h для деривативов
             v_raw = t.get("volCcy24h")
             p_raw = t.get("last") or t.get("lastPx")
             try:
@@ -188,7 +189,6 @@ class Parsing():
             except (TypeError, ValueError):
                 last_price = 0.0
 
-            # оценка объёма в USDT (для любых USD/USDT/USDC-котируемых контрактов это близко к правде)
             vol_usdt = base_vol * last_price
             vol_map[inst_id] = vol_usdt
 
@@ -205,7 +205,6 @@ class Parsing():
 
             vol_usdt = vol_map.get(sym, 0.0)
             if vol_usdt < min_vol:
-                # вот тут теперь ZETA-USDT-SWAP и прочий шлак должен отсеиваться
                 continue
 
             base = it.get("uly") or it.get("baseCcy")
@@ -291,82 +290,95 @@ class Parsing():
                 })
         return out
 
-    # ---------- HTX (Huobi) ----------
+    # ---------- Binance (USDT-M Perpetual) ----------
 
-    # async def htx_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-    #     """
-    #     HTX (Huobi) USDT-маржинальные перпы.
-    #     Оценка 24h объёма в USDT по batch_merged: amount * close.
-    #     Потом фильтр > 5M.
-    #     Coin-margined перпы не берём, чтобы не городить пересчёт.
-    #     """
-    #     out: List[Dict[str, Any]] = []
-    #     min_vol = self.MIN_24H_USDT
+    async def binance_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
+        """
+        Binance USDT-марджинальные perpetual фьючи.
+        Берём:
+          - /fapi/v1/ticker/24hr     — quoteVolume (в USDT для USDT-пар)
+          - /fapi/v1/exchangeInfo    — список контрактов, contractType == PERPETUAL
+        Фильтр: quoteAsset в стейблах (USDT/USDC/BUSD/FDUSD/TUSD/USD) и
+                 quoteVolume >= MIN_24H_USDT.
+        """
+        min_vol = self.MIN_24H_USDT
 
-    #     # тикеры linear-swap
-    #     url_ticks = "https://api.hbdm.com/linear-swap-ex/market/detail/batch_merged"
-    #     data_ticks = await self.fetch_json(client, url_ticks, params={})
-    #     ticks = (data_ticks.get("ticks") or data_ticks.get("data") or [])
-    #     vol_map: Dict[str, float] = {}
-    #     for t in ticks:
-    #         cc = t.get("contract_code")
-    #         if not cc:
-    #             continue
-    #         if not str(cc).endswith("USDT"):
-    #             continue
-    #         try:
-    #             amount = float(t.get("amount") or 0.0)
-    #         except (TypeError, ValueError):
-    #             amount = 0.0
-    #         try:
-    #             close = float(t.get("close") or 0.0)
-    #         except (TypeError, ValueError):
-    #             close = 0.0
-    #         vol = amount * close  # оценка объёма в USDT
-    #         vol_map[cc] = vol
+        # 1) 24h тикеры с объёмами
+        url_tickers = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        data_t = await self.fetch_json(client, url_tickers)
+        vol_map: Dict[str, float] = {}
+        if isinstance(data_t, list):
+            t_list = data_t
+        else:
+            # на всякий случай
+            t_list = data_t if isinstance(data_t, list) else []
 
-    #     # USDT-margined perpetuals
-    #     url_linear = "https://api.hbdm.com/linear-swap-api/v1/swap_contract_info"
-    #     data_l = await self.fetch_json(client, url_linear)
-    #     lst_l = await self.safe_get(data_l, "data", default=[]) or []
-    #     for it in lst_l:
-    #         status = it.get("contract_status")
-    #         if status != 1:  # 1 = торгуется
-    #             continue
+        for t in t_list:
+            sym = t.get("symbol")
+            if not sym:
+                continue
+            qv_raw = t.get("quoteVolume")
+            try:
+                vol = float(qv_raw) if qv_raw is not None else 0.0
+            except (TypeError, ValueError):
+                vol = 0.0
+            vol_map[sym] = vol
 
-    #         sym = it.get("contract_code")
-    #         if not sym:
-    #             continue
+        # 2) exchangeInfo с конфигурацией символов
+        url_info = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+        data_i = await self.fetch_json(client, url_info)
+        symbols_info = data_i.get("symbols", []) if isinstance(data_i, dict) else []
 
-    #         vol_usdt = vol_map.get(sym, 0.0)
-    #         if vol_usdt < min_vol:
-    #             continue
+        out: List[Dict[str, Any]] = []
+        stable_quotes = {"USDT", "BUSD", "USDC", "FDUSD", "TUSD", "USD"}
 
-    #         base = sym.split("-")[0]
-    #         out.append({
-    #             "exchange": "htx",
-    #             "symbol": sym,
-    #             "base": base,
-    #             "quote": "USDT",
-    #             "contract_type": "perpetual",
-    #             "margin_asset": "USDT",
-    #             "settle_asset": "USDT",
-    #             "linear_inverse": "linear",
-    #             "status": self.norm_status("trading"),
-    #             "funding_interval_h": 8,
-    #             "raw": it,
-    #         })
+        for it in symbols_info:
+            # интересуют только perpetual контракты
+            if it.get("contractType") != "PERPETUAL":
+                continue
+            if it.get("status") != "TRADING":
+                continue
 
-    #     return out
+            sym = it.get("symbol")
+            if not sym:
+                continue
 
-    # ---------- Главный сборщик ----------
+            base = it.get("baseAsset")
+            quote = it.get("quoteAsset")
+            margin = it.get("marginAsset")
+
+            # Берём только контракты, котируемые в стейбле/долларе,
+            # где quoteVolume можно трактовать как USDT-эквивалент.
+            if quote not in stable_quotes:
+                continue
+
+            vol_usdt = vol_map.get(sym, 0.0)
+            if vol_usdt < min_vol:
+                continue
+
+            out.append({
+                "exchange": "binance",
+                "symbol": sym,                 # например BTCUSDT
+                "base": base,
+                "quote": quote,
+                "contract_type": "perpetual",
+                "margin_asset": margin,        # обычно тоже USDT/USDC/…
+                "settle_asset": margin,
+                "linear_inverse": "linear",    # USDT-M — линейные
+                "status": self.norm_status(it.get("status")),
+                "funding_interval_h": 8,
+                "raw": it,
+            })
+
+        return out
 
     async def collect_all(self) -> List[Dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=self.TIMEOUT, headers=self.HEADERS) as client:
+        async with httpx.AsyncClient(timeout=self.TIMEOUT, headers=self.HEADERS, verify=SSL_CTX) as client:
             funcs = [
-                ("bybit", self.bybit_pairs(client)),
-                ("okx", self.okx_pairs(client)),
-                ("bitget", self.bitget_pairs(client))
+                ("bybit",   self.bybit_pairs(client)),
+                ("okx",     self.okx_pairs(client)),
+                ("bitget",  self.bitget_pairs(client)),
+                ("binance", self.binance_pairs(client)),
             ]
             tasks = [f for _, f in funcs]
             names = [n for n, _ in funcs]
@@ -418,8 +430,11 @@ class Parsing():
                     df.at[idx, "base"] = b
                 if pd.isna(df.at[idx, "quote"]) and q:
                     df.at[idx, "quote"] = q
+        # можешь раскомментировать сохранение, если нужно:
+        # await self.save_outputs(df)
         return df
 
 
 if __name__ == "__main__":
-    asyncio.run(Parsing().main())
+    df = asyncio.run(Parsing().main())
+    print(df)

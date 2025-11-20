@@ -1,0 +1,20 @@
+symbol,min_rate,min_exchange,min_funding_time,max_rate,max_exchange,max_funding_time,funding_diff_metric,metric_reason
+SOON/USDT,-0.00643214,bybit,2025-11-20 15:00:00+00:00,-0.00547767,binance,2025-11-20 15:00:00+00:00,0.0009544700000000007,same_time→spread
+LSK/USDT,-9.73e-06,binance,2025-11-20 15:00:00+00:00,0.00089749,bybit,2025-11-20 15:00:00+00:00,0.00090722,same_time→spread
+TNSR/USDT,-0.002821,bitget,2025-11-20 15:00:00+00:00,-0.00255813,binance,2025-11-20 15:00:00+00:00,0.0002628700000000001,same_time→spread
+BIO/USDT,-0.0003704166816308,okx,2025-11-20 16:00:00+00:00,-0.00014225,binance,2025-11-20 15:00:00+00:00,0.00014225,A_in_next→use_rate_a
+0G/USDT,-9.406e-05,binance,2025-11-20 15:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,0.00010656000000000001,same_time→spread
+LA/USDT,-6.792e-05,binance,2025-11-20 15:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,8.042e-05,same_time→spread
+API3/USDT,-0.00033166,binance,2025-11-20 16:00:00+00:00,-5.561e-05,bybit,2025-11-20 15:00:00+00:00,5.561e-05,B_in_next→use_rate_b
+COAI/USDT,3.764e-05,bybit,2025-11-20 15:00:00+00:00,0.0002100058070659,okx,2025-11-20 16:00:00+00:00,3.764e-05,A_in_next→use_rate_a
+AIA/USDT,1.25e-05,bybit,2025-11-20 15:00:00+00:00,4.169e-05,binance,2025-11-20 15:00:00+00:00,2.9190000000000003e-05,same_time→spread
+IP/USDT,3.8e-07,binance,2025-11-20 16:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+KAITO/USDT,-0.00014653,binance,2025-11-20 16:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+KITE/USDT,1.25e-05,bybit,2025-11-20 15:00:00+00:00,5e-05,binance,2025-11-20 16:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+FF/USDT,1.25e-05,bybit,2025-11-20 15:00:00+00:00,5e-05,binance,2025-11-20 16:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+MERL/USDT,1.25e-05,okx,2025-11-20 15:00:00+00:00,5e-05,binance,2025-11-20 16:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+MMT/USDT,-0.00369136,binance,2025-11-20 16:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+MYX/USDT,1.25e-05,bybit,2025-11-20 15:00:00+00:00,0.00011664,binance,2025-11-20 16:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+RESOLV/USDT,-0.00032638,binance,2025-11-20 16:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,1.25e-05,B_in_next→use_rate_b
+UAI/USDT,1.25e-05,binance,2025-11-20 15:00:00+00:00,0.0006093,bybit,2025-11-20 16:00:00+00:00,1.25e-05,A_in_next→use_rate_a
+WCT/USDT,-0.00023932,binance,2025-11-20 16:00:00+00:00,1.25e-05,bybit,2025-11-20 15:00:00+00:00,1.25e-05,B_in_next→use_rate_b
