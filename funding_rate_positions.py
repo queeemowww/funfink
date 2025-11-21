@@ -27,6 +27,11 @@ from pathlib import Path
 import sys
 import ssl
 import certifi
+from datetime import datetime, timezone
+from typing import Optional, Tuple
+import re
+import httpx
+
 
 load_dotenv() 
 
@@ -597,39 +602,56 @@ class Logic():
         except Exception:
             return None
 
-    async def get_last_funding(self, exchange: str, symbol: str) -> Optional[float]:
+
+    async def get_last_funding(self, exchange: str, symbol: str) -> Optional[Tuple[float, datetime]]:
         """
         Вернёт последнюю ЗАВЕРШЁННУЮ ставку финансирования (previous/last) для пары на указанной бирже.
-        Возвращает float (доля, например 0.0001 == 0.01%) или None, если не удалось получить.
+        Возвращает кортеж (rate, ts_utc), где:
+        - rate: float, доля (например 0.0001 == 0.01%)
+        - ts_utc: datetime в UTC
+        Или None, если не удалось получить данные.
         """
+        # нормализуем символ
         if not len(re.findall(".+USDT", symbol)):
-            symbol = symbol+'/USDT'
-        symbol=symbol.replace('/','')
+            symbol = symbol + '/USDT'
+        symbol = symbol.replace('/', '')
 
         ex = exchange.lower().strip()
         # универсальный символ -> формат биржи
         uni = self._normalize_universal(symbol)
         sym = self._to_exchange_symbol(ex, uni)
 
+        def _ms_to_utc(ts_ms) -> Optional[datetime]:
+            try:
+                ms = int(ts_ms)
+                return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+            except Exception:
+                return None
+
         async with httpx.AsyncClient(verify=SSL_CTX) as client:
             try:
                 # ---- Bybit ----
                 if ex == 'bybit':
-                    # История финансирования
                     # GET /v5/market/funding/history?category=linear&symbol=BTCUSDT&limit=1
-                    # response.result.list[0].fundingRate  (последняя завершённая)
                     url = "https://api.bybit.com/v5/market/funding/history"
                     params = {"category": "linear", "symbol": sym, "limit": 1}
                     data = await self._get_json(client, url, params)
                     items = (data.get("result") or {}).get("list") or []
                     if items:
-                        return self._to_float(items[0].get("fundingRate")) 
-                    # fallback: попробуем inverse (на всякий)
+                        rate = self._to_float(items[0].get("fundingRate"))
+                        ts_utc = _ms_to_utc(items[0].get("fundingRateTimestamp"))
+                        if rate is not None and ts_utc is not None:
+                            return rate * 100, ts_utc
+
+                    # fallback: inverse
                     params["category"] = "inverse"
                     data = await self._get_json(client, url, params)
                     items = (data.get("result") or {}).get("list") or []
                     if items:
-                        return self._to_float(items[0].get("fundingRate"))
+                        rate = self._to_float(items[0].get("fundingRate"))
+                        ts_utc = _ms_to_utc(items[0].get("fundingRateTimestamp"))
+                        if rate is not None and ts_utc is not None:
+                            return rate * 100, ts_utc
                     return None
 
                 # ---- OKX ----
@@ -640,7 +662,10 @@ class Logic():
                     data = await self._get_json(client, url, params)
                     arr = data.get("data") or []
                     if arr:
-                        return self._to_float(arr[0].get("fundingRate"))
+                        rate = self._to_float(arr[0].get("fundingRate"))
+                        ts_utc = _ms_to_utc(arr[0].get("fundingTime"))
+                        if rate is not None and ts_utc is not None:
+                            return rate * 100, ts_utc
                     return None
 
                 # ---- Bitget ----
@@ -651,25 +676,31 @@ class Logic():
                     data = await self._get_json(client, url, params)
                     arr = data.get("data") or []
                     if arr:
-                        return self._to_float(arr[0].get("fundingRate"))
+                        rate = self._to_float(arr[0].get("fundingRate"))
+                        ts_utc = _ms_to_utc(arr[0].get("settleTime"))
+                        if rate is not None and ts_utc is not None:
+                            return rate * 100, ts_utc
                     return None
-                
+
+                # ---- Binance ----
                 if ex == 'binance':
-                    # История фандинга: последняя завершённая ставка
                     # GET /fapi/v1/fundingRate?symbol=BTCUSDT&limit=1
                     url = "https://fapi.binance.com/fapi/v1/fundingRate"
                     params = {"symbol": sym, "limit": 1}
                     data = await self._get_json(client, url, params)
                     # Binance возвращает список
                     if isinstance(data, list) and data:
-                        return self._to_float(data[0].get("fundingRate"))
+                        rate = self._to_float(data[0].get("fundingRate"))
+                        ts_utc = _ms_to_utc(data[0].get("fundingTime"))
+                        if rate is not None and ts_utc is not None:
+                            return rate * 100, ts_utc
                     return None
+
                 # неизвестная биржа
                 return None
 
             except Exception:
                 return None
-
 
     # ===== Фетчеры по биржам =====
     async def fetch_bybit(self,client: httpx.AsyncClient, row: dict) -> dict:
@@ -1494,20 +1525,18 @@ class Logic():
                                 long_last_funding = row["long_funding"]
                                 short_last_funding = row["short_funding"]
                                 possible_revenue = row["possible_revenue"]
-                                if possible_revenue == abs(long_last_funding):
-                                    long_last_funding  = await self.get_last_funding(exchange=long_ex,  symbol=symbol) * 100
-                                    short_last_funding = 0
-                                elif possible_revenue == abs(short_last_funding):
-                                    short_last_funding  = await self.get_last_funding(exchange=short_ex,  symbol=symbol) * 100
+                                short_last_funding, short_last_funding_time  = await self.get_last_funding(exchange=short_ex,  symbol=symbol)
+                                long_last_funding, long_last_funding_time  = await self.get_last_funding(exchange=long_ex,  symbol=symbol)
+
+                                if now.hour - long_last_funding_time.hour > 1:
                                     long_last_funding = 0
-                                else:
-                                    short_last_funding  = await self.get_last_funding(exchange=short_ex,  symbol=symbol) * 100
-                                    long_last_funding  = await self.get_last_funding(exchange=long_ex,  symbol=symbol) * 100
-                                print(f"{symbol}: long={long_ex} => {long_last_funding}, short={short_ex} => {short_last_funding}")
+                                if now.hour - short_last_funding_time.hour > 1:
+                                    short_last_funding = 0
 
                                 # Запись в новые поля (как ты просил)
                                 logs_df.loc[idx, "long_funding"]  = long_last_funding
                                 logs_df.loc[idx, "short_funding"] = short_last_funding
+                                
                                 if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
                                     print("same_hr")
                                     logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
