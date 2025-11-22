@@ -1444,10 +1444,17 @@ class Logic():
                             self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}, qty = {qty}')
 
                     while True:
-                        pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
-                        pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
-                        long_price = float(pos_long['entry_price'])
-                        short_price = float(pos_short['entry_price'])
+                        flag = 1
+                        while flag <= 3:
+                            try:
+                                pos_long = await self.c.get_open_position(symbol=sym, exchange=long_ex)
+                                pos_short = await self.c.get_open_position(symbol=sym, exchange=short_ex)
+                                long_price = float(pos_long['entry_price'])
+                                short_price = float(pos_short['entry_price'])
+                                break
+                            except:
+                                flag += 1
+                        
                         if long_price and short_price:
                             break
                     if not self.leave:
@@ -1567,10 +1574,17 @@ class Logic():
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
-                        long_pos = await self.c.get_open_position(exchange=long_ex, symbol=symbol)
-                        short_pos = await self.c.get_open_position(exchange=short_ex, symbol=symbol)
-                        long_price = float(long_pos['market_price'])
-                        short_price = float(short_pos['market_price'])
+                        flag = 1
+                        while flag <= 3:
+                            try:
+                                long_pos = await self.c.get_open_position(exchange=long_ex, symbol=symbol)
+                                short_pos = await self.c.get_open_position(exchange=short_ex, symbol=symbol)
+                                long_price = float(long_pos['market_price'])
+                                short_price = float(short_pos['market_price'])
+                                break
+                            except:
+                                flag += 1
+                        
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
                         self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 35 else 0.4 - 0.8 * possible_revenue

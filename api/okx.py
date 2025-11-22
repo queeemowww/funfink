@@ -819,9 +819,9 @@ async def main():
         # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
         # открыть сделки (пример):
-        r = await client.open_long_usdt(symbol, 300, leverage=5)
-        print("OPEN LONG:", r)
-        # r = await client.open_short_usdt(symbol, 50, leverage=1)
+        # r = await client.open_long_usdt(symbol, 300, leverage=5)
+        # print("OPEN LONG:", r) 
+        # # r = await client.open_short_usdt(symbol, 50, leverage=1)
         # print("OPEN SHORT:", r)
 
         pos = await client.get_open_positions(symbol=symbol)
