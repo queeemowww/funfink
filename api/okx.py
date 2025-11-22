@@ -676,7 +676,7 @@ class OKXAsyncClient:
 
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
         items = raw.get("data") or []
-        result: List[dict] = []
+        result = {}
 
         if not items:
             return None
@@ -746,7 +746,7 @@ class OKXAsyncClient:
                     usdt_str = _fmt_decimal(usdt_val)
                 else:
                     usdt_str = _fmt_decimal(_d(notional_usd))
-                result.append({
+                result = {
                     "opened_at": opened_at,
                     "symbol": coin,
                     "side": side,
@@ -755,11 +755,11 @@ class OKXAsyncClient:
                     "entry_usdt": ((float(usdt_str) - float(pnl)) / float(leverage)),
                     "entry_price": avg_px, 
                     "market_price": mark_px
-                })
+                }
             except Exception:
                 continue
 
-        return result[0] or None
+        return result or None
     
         # ------------------ баланс аккаунта (USDT) ------------------
     async def get_usdt_balance(self) -> str:
@@ -832,7 +832,7 @@ async def main():
         r = await client.close_all_positions(symbol=symbol)
         print("CLOSE ALL SIDES:", r)
 
-        print(float(await client.get_usdt_balance()))
+        # print(float(await client.get_usdt_balance()))
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=50, side="buy"))
 
     finally:

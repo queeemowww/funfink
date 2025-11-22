@@ -1180,10 +1180,11 @@ class Logic():
                         logs_df.loc[idx, 'status'] = 'active'
                     else:
                         idx = mask_active.index[e]
+                        self.new_balance = 0
                         for ex in ['bybit', 'bitget', 'okx', "binance"]:
                             self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
                         self.profit = (self.new_balance - self.all_balance) / self.all_balance
-                        self.tg_send(f'Разница в карман: {(self.profit *100):.2f}\n💰БАЛАНС: {self.new_balance:.2f} %\n\n Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
+                        self.tg_send(f'Разница в карман: {(self.profit *100):.2f}%\n💰БАЛАНС: {self.new_balance:.2f} USDT\n\n Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
                         await asyncio.gather(self.c.close_order(symbol=symbol, exchange=current_long),
                                 self.c.close_order(symbol=symbol, exchange=current_short))
                         # Обновляем значение в исходном df
@@ -1602,8 +1603,8 @@ class Logic():
                             self.confirmations[symbol] = 0
                         print(self.confirmations[symbol])
                         if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
-                            print(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
-                            self.tg_send(f"Разница в карман: ⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
+                            print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
+                            self.tg_send(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             await asyncio.gather(
                             self.c.close_order(symbol=symbol, exchange=long_ex),
                             self.c.close_order(symbol=symbol, exchange=short_ex)
@@ -1612,7 +1613,7 @@ class Logic():
                             for ex in ['bybit', 'bitget', 'okx', 'binance']:
                                 self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
                             self.profit = (self.new_balance - self.all_balance) / self.all_balance
-                            self.tg_send(f"💰БАЛАНС: {self.new_balance:.2f}\n\nПибыль: {self.profit:.2f}%")
+                            self.tg_send(f"💰БАЛАНС: {self.new_balance:.2f} USDT\n\nПибыль: {self.profit:.2f}%")
                             active_logs['status']=active_logs[active_logs['symbol']==symbol]['status']=='none'
                             # close_positions(long_ex, short_ex, symbol)
                             mask_close = (
