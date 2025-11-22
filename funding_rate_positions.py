@@ -189,7 +189,7 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=3
+        self.check_price_start=10
         self.check_price_finish=44
         self.minutes_for_start_parse = 45
         self.start_pars_pairs=2
@@ -1588,7 +1588,7 @@ class Logic():
                         
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 35 else 0.4 - 0.8 * possible_revenue
+                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 30 else 0.4 - 0.8 * possible_revenue
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
