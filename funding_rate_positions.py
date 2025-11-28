@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 import re
 import httpx
+from decimal import Decimal
 
 
 load_dotenv() 
@@ -111,35 +112,50 @@ class Calc():
 
 
     async def get_qty(self, long_ex, short_ex, sym):
+        # 1) расчёт общего размера в USDT — как и раньше
         long_ex_size = math.floor(int(float(await self.dict[long_ex].get_usdt_balance())))
         short_ex_size = math.floor(int(float(await self.dict[short_ex].get_usdt_balance())))
         self.size = min(long_ex_size, short_ex_size) * 0.9
+
         newsym = sym
         if not len(re.findall(".+USDT", newsym)):
-            newsym = newsym+'/USDT'
-        newsym=newsym.replace('/','')
+            newsym = newsym + '/USDT'
+        newsym = newsym.replace('/','')
 
-        qty_long = await self.dict[long_ex].usdt_to_qty(symbol=newsym, usdt_amount=self.size, side="buy")
-        qty_short = await self.dict[short_ex].usdt_to_qty(symbol=newsym, usdt_amount=self.size, side="sell") 
-        qty = min(float(qty_long), float(qty_short))
-        try:
-            contract_size_long = self.dict[long_ex].contract_size
-            if qty % contract_size_long:
-                qty = qty // contract_size_long * contract_size_long
-            if qty < contract_size_long:
-                pass
-        except:
-            pass
-        try:
-            contract_size_short = self.dict[short_ex].contract_size
-            if qty % contract_size_short:
-                qty = qty // contract_size_short * contract_size_short
-            if qty < contract_size_short:
-                pass
-                # self.tg_send(f'Минимальный размер контракта на {short_ex} > чем размер позиции {qty}. Открыть не получится')
-        except:
-            pass
-        return qty
+        # 2) конвертация USDT -> количество для каждой биржи
+        qty_long_raw = await self.dict[long_ex].usdt_to_qty(
+            symbol=newsym,
+            usdt_amount=self.size,
+            side="buy"
+        )
+        qty_short_raw = await self.dict[short_ex].usdt_to_qty(
+            symbol=newsym,
+            usdt_amount=self.size,
+            side="sell"
+        )
+
+        qty_long = Decimal(str(qty_long_raw))
+        qty_short = Decimal(str(qty_short_raw))
+
+        # берём минимальный объём в монетах
+        qty = min(qty_long, qty_short)
+
+        # 3) приводим qty к шагу контракта тех бирж, где он есть (OKX и др.)
+        for ex in (long_ex, short_ex):
+            client = self.dict[ex]
+            contract_size = getattr(client, "contract_size", None)
+            if contract_size is None:
+                continue
+
+            cs = Decimal(str(contract_size))
+            if cs <= 0:
+                continue
+
+            # обрезаем вниз до ближайшего кратного contract_size
+            if qty >= cs:
+                qty = (qty // cs) * cs
+
+        return float(qty)
 
     async def open_order(self, direction, symbol, exchange, size):
         if not len(re.findall(".+USDT", symbol)):
@@ -1104,15 +1120,8 @@ class Logic():
             analytical_df=result_sorted.head(5)
             text=[]
             self.all_balance = 0
-            j = 0
             for ex in ['bybit', 'bitget', 'okx', 'binance']:
-                while j <= 3:
-                    try:
-                        res = await self.c.dict[ex].get_usdt_balance()
-                        break
-                    except:
-                        j+=1
-                        res = 0
+                res = await self.c.dict[ex].get_usdt_balance()
                 self.all_balance += float(res)
                 self.balance[ex] = float(res)
 
@@ -1193,16 +1202,41 @@ class Logic():
                         logs_df.loc[idx, 'status'] = 'active'
                     else:
                         idx = mask_active.index[e]
-                        self.new_balance = 0
-                        for ex in ['bybit', 'bitget', 'okx', "binance"]:
-                            self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
-                        self.profit = (self.new_balance - self.all_balance) / self.all_balance
-                        self.tg_send(f'Разница в карман: {(self.profit *100):.2f}%\n💰БАЛАНС: {self.new_balance:.2f} USDT\n\n Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным')
-                        await asyncio.gather(self.c.close_order(symbol=symbol, exchange=current_long),
-                                self.c.close_order(symbol=symbol, exchange=current_short))
-                        # Обновляем значение в исходном df
+
+                        # 1) баланс до закрытия
+                        balance_before = 0.0
+                        for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                            balance_before += float(await self.c.dict[ex].get_usdt_balance())
+
+                        # 2) закрываем пару
+                        await asyncio.gather(
+                            self.c.close_order(symbol=symbol, exchange=current_long),
+                            self.c.close_order(symbol=symbol, exchange=current_short)
+                        )
+
+                        # 3) баланс после закрытия
+                        balance_after = 0.0
+                        for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                            balance_after += float(await self.c.dict[ex].get_usdt_balance())
+
+                        trade_pnl = balance_after - balance_before
+                        trade_pnl_pct = (trade_pnl / balance_before * 100) if balance_before > 0 else 0.0
+
+                        # обновляем глобальный "общий баланс", если он тебе нужен
+                        self.new_balance = balance_after
+                        self.all_balance = balance_after
+
+                        self.profit = trade_pnl_pct / 100  # если хочешь в той же системе, как раньше
+
+                        self.tg_send(
+                            f'Закрываем позиции по {symbol} с прошлого часа, доход по фандингу стал отрицательным\n\n'
+                            f'💰Баланс до: {balance_before:.2f} USDT\n'
+                            f'💰Баланс после: {balance_after:.2f} USDT\n'
+                            f'Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)'
+                        )
+
                         logs_df.loc[idx, 'status'] = 'closed'
-            logs_df.to_csv(self.logs_path, index=False)           
+                    
                         
             i=0 
 
@@ -1622,18 +1656,42 @@ class Logic():
                         print(self.confirmations[symbol])
                         if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
                             print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
-                            self.tg_send(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
-                            await asyncio.gather(
-                            self.c.close_order(symbol=symbol, exchange=long_ex),
-                            self.c.close_order(symbol=symbol, exchange=short_ex)
-                        )
-                            self.new_balance = 0
+                            self.tg_send(
+                                f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. "
+                                f"Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}"
+                            )
+
+                            # 1) баланс до закрытия
+                            balance_before = 0.0
                             for ex in ['bybit', 'bitget', 'okx', 'binance']:
-                                self.new_balance += float(await self.c.dict[ex].get_usdt_balance())
-                            self.profit = (self.new_balance - self.all_balance) / self.all_balance
-                            self.tg_send(f"💰БАЛАНС: {self.new_balance:.2f} USDT\n\nПибыль: {self.profit:.2f}%")
-                            active_logs['status']=active_logs[active_logs['symbol']==symbol]['status']=='none'
-                            # close_positions(long_ex, short_ex, symbol)
+                                balance_before += float(await self.c.dict[ex].get_usdt_balance())
+
+                            # 2) закрываем пару
+                            await asyncio.gather(
+                                self.c.close_order(symbol=symbol, exchange=long_ex),
+                                self.c.close_order(symbol=symbol, exchange=short_ex)
+                            )
+
+                            # 3) баланс после закрытия
+                            balance_after = 0.0
+                            for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                                balance_after += float(await self.c.dict[ex].get_usdt_balance())
+
+                            trade_pnl = balance_after - balance_before
+                            trade_pnl_pct = (trade_pnl / balance_before * 100) if balance_before > 0 else 0.0
+
+                            # обновляем "глобальный" баланс
+                            self.new_balance = balance_after
+                            self.all_balance = balance_after
+                            self.profit = trade_pnl_pct / 100
+
+                            self.tg_send(
+                                f"💰Баланс до: {balance_before:.2f} USDT\n"
+                                f"💰Баланс после: {balance_after:.2f} USDT\n"
+                                f"Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)"
+                            )
+
+                            active_logs['status'] = active_logs[active_logs['symbol'] == symbol]['status'] == 'none'
                             mask_close = (
                                 (logs_df['symbol'] == symbol) &
                                 (logs_df['long_exchange'] == long_ex) &
@@ -1644,9 +1702,7 @@ class Logic():
                             try:
                                 logs_df.to_csv(self.logs_path, index=False)
                             except Exception as e:
-                                print(f"⚠️ не удалось записать лог: {e}")
-
-                            
+                                print(f"⚠️ не удалось записать лог: {e}")    
 
                     except Exception as e:
                         print(f"Ошибка при проверке {active_logs.iloc[i]['symbol']}: {e}")
@@ -1704,6 +1760,7 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
+        # print(await self.c.get_qty("binance", "okx", "TURBOUSDT"))
         await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         # await asyncio.gather(self.run_daily_task())
         

@@ -677,7 +677,6 @@ class OKXAsyncClient:
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
         items = raw.get("data") or []
         result = {}
-        print(items)
         if not items:
             return None
 
@@ -816,9 +815,9 @@ async def main():
     client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
     try:
         symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
-        print(await client.open_long(symbol="BIOUSDT", qty="300", leverage=5))
+        # print(await client.open_long(symbol="BIOUSDT", qty="300", leverage=5))
 
-        # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
+        print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
         # открыть сделки (пример):
         # r = await client.open_long_usdt(symbol, 300, leverage=5)
