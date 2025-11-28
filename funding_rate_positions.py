@@ -1736,6 +1736,7 @@ class Logic():
             else:
                 # ждём до следующего часа или следующей 5-й минуты
                 print(f"⏸ Сейчас {now.strftime('%H:%M:%S')} — вне окна (ждём 5-ю минуту)")
+                self.tg_send(spam= True, text=f"⏸ Сейчас {now.strftime('%H:%M:%S')} — вне окна (ждём 5-ю минуту)")
                 await asyncio.sleep(60)
 
 
