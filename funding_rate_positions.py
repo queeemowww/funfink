@@ -70,6 +70,9 @@ KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 
+TG_TOKEN2 = os.getenv('TG_TOKEN2')
+TG_CHAT2 = os.getenv('TG_CHAT2')
+
 class Calc():
     def __init__(self):
         self.leverage = 1
@@ -393,24 +396,39 @@ class Logic():
         return results["long"], results["short"]
 
 #отправка в тг
-    def tg_send(self, text: str):
-        url = f"https://api.telegram.org/bot{self.TG_TOKEN}/sendMessage"
-        data = {"chat_id": self.TG_CHAT, "text": text}
+    def tg_send(self, text: str, spam = None):
+        # список "куда слать"
+        if not spam:
+            destinations = [
+                (self.TG_TOKEN,  self.TG_CHAT),
+                (TG_TOKEN2, TG_CHAT2),
+            ]
+        else:
+             destinations = [
+                (TG_TOKEN2, TG_CHAT2),
+             ]
+        for token, chat_id in destinations:
+            if not token or not chat_id:
+                continue  # просто пропускаем, если что-то не настроено
 
-        try:
-            # 1) Пытаемся с нормальной проверкой сертификатов (через certifi)
-            requests.post(url, json=data, timeout=10, verify=CA_BUNDLE)
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            data = {"chat_id": chat_id, "text": text}
 
-        except requests.exceptions.SSLError as e:
-            print("⚠️ SSL ошибка при отправке в Telegram, пробую без verify:", e)
             try:
-                # 2) Fallback: отключаем verify ТОЛЬКО для Телеги
-                requests.post(url, json=data, timeout=10, verify=False)
-            except Exception as e2:
-                print("Ошибка отправки в Telegram (fallback тоже упал):", e2)
+                # 1) Пытаемся с нормальной проверкой сертификатов (через certifi)
+                requests.post(url, json=data, timeout=10, verify=CA_BUNDLE)
 
-        except Exception as e:
-            print("Ошибка отправки в Telegram:", e)
+            except requests.exceptions.SSLError as e:
+                print("⚠️ SSL ошибка при отправке в Telegram, пробую без verify:", e)
+                try:
+                    # 2) Fallback: отключаем verify ТОЛЬКО для Телеги
+                    requests.post(url, json=data, timeout=10, verify=False)
+                except Exception as e2:
+                    print("Ошибка отправки в Telegram (fallback тоже упал):", e2)
+
+            except Exception as e:
+                print("Ошибка отправки в Telegram:", e)
+
 
 
     def safe_get(self, url: str, *, params=None, timeout: float = 10.0):
@@ -1613,6 +1631,7 @@ class Logic():
 
             # работаем только с 5-й по 45-ю минуту включительно
             if self.check_price_start <= seconds_15 <= self.check_price_finish and not active_logs[active_logs['status']=='active'].empty:
+                self.tg_send(spam=True, text=f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 print(f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 for i in range(len(active_logs)):
                     try:
@@ -1621,6 +1640,7 @@ class Logic():
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
+                        self.tg_send(spam=True, text=f"{possible_revenue} - possible revenue")
                         flag = 1
                         while flag <= 3:
                             try:
@@ -1644,6 +1664,8 @@ class Logic():
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
+                        self.tg_send(spam=True, text=f"current long price = {long_price}, open long price = {active_logs.iloc[i]['long_price']}\ncurrent short price = {short_price}, open short price = {active_logs.iloc[i]['short_price']}\ncurrent diff = {current_old_diff}, demanded diff return = {self.diff_return}")
+
                         try:
                             self.confirmations[symbol] = self.confirmations[symbol]
                         except:
@@ -1654,6 +1676,7 @@ class Logic():
                         else:
                             self.confirmations[symbol] = 0
                         print(self.confirmations[symbol])
+                        self.tg_send(spam=True, text=f"confirmations count = {self.confirmations[symbol]}")
                         if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
                             print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             self.tg_send(
