@@ -500,6 +500,7 @@ class BitgetAsyncClient:
         out['pnl'] = items[0]["unrealizedPL"]
         out['entry_price'] = items[0]["averageOpenPrice"]
         out['market_price'] =  items[0]['marketPrice']
+        out['liq_price'] = items[0]['liquidationPrice']
         return out or None
 
 
@@ -523,8 +524,8 @@ async def main():
     symbol = "BIOUSDT"  # будет преобразовано в 'BIOUSDT_UMCBL'
     async with BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE) as client:
         # Примеры открытия:
-        print(await client.open_long(symbol="SWARMSUSDT", qty='1000', leverage=1))
-        # print(await client.open_short(symbol=symbol, qty=300, leverage=5))
+        # print(await client.open_long(symbol="SWARMSUSDT", qty='1000', leverage=5))
+        # print(await client.open_short(symbol=symbol, qty=100, leverage=5))
         # print(await client.open_short_usdt(symbol, 20, leverage=5))
         
         # Позиции
@@ -535,9 +536,9 @@ async def main():
 
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
-        # # Закрыть и лонг, и шорт целиком (если есть)
-        # res = await client.close_all_positions("SWARMSUSDT")
-        # print("CLOSE ALL:", res)
+        # Закрыть и лонг, и шорт целиком (если есть)
+        res = await client.close_all_positions("SOONUSDT")
+        print("CLOSE ALL:", res)
 
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy"))
 

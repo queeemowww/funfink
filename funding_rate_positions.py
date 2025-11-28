@@ -72,13 +72,19 @@ BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 class Calc():
     def __init__(self):
         self.leverage = 1
+        self.liquidation = 1
         self.dict = {
             "bitget": BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE),
             "bybit": BybitAsyncClient(BYBIT_API_KEY, BYBIT_API_SECRET, testnet=False),
             "okx": OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE), 
             "binance": BinanceAsyncFuturesClient(BINANCE_API_KEY, BINANCE_API_SECRET)
         }
-
+        if self.leverage == 3:
+            self.liquidation = 0.29
+        elif self.leverage == 5:
+            self.liquidation = 0.18
+        elif self.leverage == 10:
+            self.liquidation = 0.07
 
     async def get_funding(self):
         "ВЕРНУТЬ РАЗМЕР ФАНДИНГА"
@@ -190,7 +196,7 @@ class Logic():
         self.diff_return=0.15
         #время
         self.check_price_start=10
-        self.check_price_finish=44
+        self.check_price_finish=59
         self.minutes_for_start_parse = 45
         self.start_pars_pairs=2
         #Интервал парсинга пар в часах
@@ -1098,10 +1104,17 @@ class Logic():
             analytical_df=result_sorted.head(5)
             text=[]
             self.all_balance = 0
-
+            j = 0
             for ex in ['bybit', 'bitget', 'okx', 'binance']:
-                self.all_balance += float(await self.c.dict[ex].get_usdt_balance())
-                self.balance[ex] = float(await self.c.dict[ex].get_usdt_balance())
+                while j <= 3:
+                    try:
+                        res = await self.c.dict[ex].get_usdt_balance()
+                        break
+                    except:
+                        j+=1
+                        res = 0
+                self.all_balance += float(res)
+                self.balance[ex] = float(res)
 
             for i in range(5):
                 if i == 0:
@@ -1568,7 +1581,6 @@ class Logic():
             if self.check_price_start <= seconds_15 <= self.check_price_finish and not active_logs[active_logs['status']=='active'].empty:
                 print(f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 for i in range(len(active_logs)):
-                    await self._anti_liq_guard(active_logs.iloc[i])
                     try:
                         long_ex = active_logs.iloc[i]['long_exchange']
                         short_ex = active_logs.iloc[i]['short_exchange']
@@ -1588,7 +1600,13 @@ class Logic():
                         
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        self.diff_return = 0.6 - 0.8 * possible_revenue if seconds_15 < 30 else 0.4 - 0.8 * possible_revenue
+                        if seconds_15 < 30:
+                            self.diff_return = 0.5 - 0.8 * possible_revenue
+                        elif 30 <= seconds_15 < self.minutes_for_start_parse:
+                            self.diff_return = 0.45 - possible_revenue
+                        else:
+                            self.diff_return = 0.5
+
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)

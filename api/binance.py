@@ -226,6 +226,17 @@ class BinanceAsyncFuturesClient:
                 step = _d(f.get("stepSize", "0"))
                 break
         return min_qty, step
+    async def _symbol_price_step(self, symbol: str) -> Decimal:
+        """
+        Возвращает шаг цены (tickSize) из фильтра PRICE_FILTER.
+        """
+        info = await self._get_symbol_info(symbol)
+        filters = info.get("filters") or []
+        for f in filters:
+            if f.get("filterType") == "PRICE_FILTER":
+                return _d(f.get("tickSize", "0"))
+        return _d("0")
+
 
     async def usdt_to_qty(
         self,
@@ -309,6 +320,111 @@ class BinanceAsyncFuturesClient:
 
         return await self._signed_post("/fapi/v1/order", params)
 
+    async def _create_stop_loss_for_position(
+        self,
+        symbol: str,
+        *,
+        side: Literal["long", "short"],
+        client_oid: Optional[str] = None,
+        offset_percent: Decimal = _d("0.01"),  # 1%
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Создаёт лимитный стоп-лосс по текущей позиции:
+          - для long: стоп на ликвидацию + 1%
+          - для short: стоп на ликвидацию - 1%
+
+        Ордер ставится как LIMIT STOP (type=STOP) с reduceOnly=true.
+        """
+        positions = await self._single_position(symbol)
+        if not positions:
+            return None
+
+        target = None
+        for p in positions:
+            try:
+                amt = _d(p.get("positionAmt") or "0")
+            except Exception:
+                continue
+            if side == "long" and amt > 0:
+                target = p
+                break
+            if side == "short" and amt < 0:
+                target = p
+                break
+
+        if target is None:
+            return None
+
+        # Ликвидационная цена
+        try:
+            liq = _d(target.get("liquidationPrice") or "0")
+        except Exception:
+            return None
+        if liq <= 0:
+            return None
+
+        # Размер позиции
+        try:
+            amt_abs = _d(target.get("positionAmt") or "0").copy_abs()
+        except Exception:
+            return None
+        if amt_abs <= 0:
+            return None
+
+        # Нормируем количество к LOT_SIZE
+        min_qty, step = await self._symbol_step_info(symbol)
+        qty_dec = amt_abs
+        if step > 0:
+            qty_dec = _round_step(qty_dec, step)
+        if qty_dec < min_qty:
+            qty_dec = min_qty
+        qty_str = _trim_decimals(qty_dec)
+
+        # Стоп-цена:
+        #   long  -> ликвидация + 1%
+        #   short -> ликвидация - 1%
+        if side == "long":
+            sl_price_dec = liq * (Decimal("1") + offset_percent)
+        else:
+            sl_price_dec = liq * (Decimal("1") - offset_percent)
+
+        price_step = await self._symbol_price_step(symbol)
+        if price_step > 0:
+            sl_price_dec = _round_step(sl_price_dec, price_step)
+        if sl_price_dec <= 0:
+            return None
+
+        stop_price_str = _trim_decimals(sl_price_dec)
+
+        # Сторона ордера (закрываем позицию)
+        order_side: Literal["BUY", "SELL"]
+        if side == "long":
+            order_side = "SELL"
+        else:
+            order_side = "BUY"
+
+        sym = self.spot_like_symbol(symbol)
+        params: Dict[str, Any] = {
+            "symbol": sym,
+            "side": order_side,
+            "type": "STOP",  # лимитный стоп-ордер
+            "quantity": qty_str,
+            "price": stop_price_str,
+            "stopPrice": stop_price_str,
+            "timeInForce": "GTC",
+            "reduceOnly": "true",
+        }
+
+        if client_oid:
+            # отдельный clientOrderId для стоп-лосса
+            params["newClientOrderId"] = (client_oid + "_SL")[:36]
+
+        try:
+            return await self._signed_post("/fapi/v1/order", params)
+        except Exception as e:
+            print(f"Не удалось создать стоп-лосс для {sym}: {e}")
+            return None
+
     async def open_long(
         self,
         symbol: str,
@@ -321,10 +437,12 @@ class BinanceAsyncFuturesClient:
     ) -> Dict[str, Any]:
         """
         Открыть/увеличить long (BUY).
+        Для рыночного ордера дополнительно ставим лимитный стоп-лосс.
         """
         if leverage:
             await self.set_leverage(symbol, leverage)
-        return await self._place_order(
+
+        order = await self._place_order(
             symbol=symbol,
             side="BUY",
             quantity=qty,
@@ -333,6 +451,22 @@ class BinanceAsyncFuturesClient:
             client_oid=client_oid,
             reduce_only=False,
         )
+
+        # Только для MARKET – сразу навешиваем стоп-лосс
+        if order_type == "MARKET":
+            try:
+                # даём бирже чуть обновить positionRisk, чтобы появилась ликвидация
+                await asyncio.sleep(0.1)
+                
+                await self._create_stop_loss_for_position(
+                    symbol,
+                    side="long",
+                    client_oid=client_oid,
+                )
+            except Exception as e:
+                print(f"Ошибка при создании стоп-лосса для LONG {symbol}: {e}")
+
+        return order
 
     async def open_short(
         self,
@@ -346,12 +480,12 @@ class BinanceAsyncFuturesClient:
     ) -> Dict[str, Any]:
         """
         Открыть/увеличить short (SELL).
-        В one-way режиме SELL уменьшает long или открывает short.
-        В hedge режиме — это short, если указан positionSide=SHORT (здесь не используем).
+        Для рыночного ордера дополнительно ставим лимитный стоп-лосс.
         """
         if leverage:
             await self.set_leverage(symbol, leverage)
-        return await self._place_order(
+
+        order = await self._place_order(
             symbol=symbol,
             side="SELL",
             quantity=qty,
@@ -360,6 +494,20 @@ class BinanceAsyncFuturesClient:
             client_oid=client_oid,
             reduce_only=False,
         )
+
+        if order_type == "MARKET":
+            try:
+                await asyncio.sleep(0.1)
+                await self._create_stop_loss_for_position(
+                    symbol,
+                    side="short",
+                    client_oid=client_oid,
+                )
+            except Exception as e:
+                print(f"Ошибка при создании стоп-лосса для SHORT {symbol}: {e}")
+
+        return order
+
 
     # Удобные обёртки через USDT
     async def open_long_usdt(
@@ -463,6 +611,73 @@ class BinanceAsyncFuturesClient:
             if want_side == "short" and amt < 0:
                 return amt.copy_abs(), p
         return _d(0), None
+    
+    async def _get_order_realized_pnl(
+        self,
+        symbol: str,
+        order: Optional[Dict[str, Any]],
+        *,
+        retries: int = 3,
+        delay: float = 0.15,
+    ) -> Optional[Decimal]:
+        """
+        Для переданного ордера (ответ /fapi/v1/order) подтягивает realizedPnl
+        по его сделкам из /fapi/v1/userTrades и суммирует.
+
+        Возвращает Decimal или None, если сделки не найдены.
+        """
+        if not order:
+            return None
+
+        order_id = order.get("orderId")
+        if order_id is None:
+            return None
+
+        try:
+            order_id_int = int(order_id)
+        except Exception:
+            return None
+
+        sym = self.spot_like_symbol(order.get("symbol") or symbol)
+
+        last_pnl: Optional[Decimal] = None
+
+        for _ in range(retries):
+            try:
+                trades = await self._signed_get("/fapi/v1/userTrades", {
+                    "symbol": sym,
+                    "limit": 50,
+                })
+            except Exception:
+                trades = None
+
+            if isinstance(trades, list):
+                pnl_sum = _d("0")
+                found = False
+                for tr in trades:
+                    try:
+                        if int(tr.get("orderId")) != order_id_int:
+                            continue
+                    except Exception:
+                        continue
+                    rp = tr.get("realizedPnl")
+                    if rp is None:
+                        continue
+                    try:
+                        pnl_sum += _d(rp)
+                        found = True
+                    except Exception:
+                        continue
+
+                if found:
+                    last_pnl = pnl_sum
+                    break
+
+            # если не нашли сделки по этому ордеру — даём бирже время "догнать"
+            await asyncio.sleep(delay)
+
+        return last_pnl
+
 
     async def close_long_all(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
@@ -508,13 +723,51 @@ class BinanceAsyncFuturesClient:
             reduce_only=True,
         )
 
-    async def close_all_positions(self, symbol: str) -> Dict[str, Optional[Dict[str, Any]]]:
+    async def close_all_positions(self, symbol: str) -> Dict[str, Any]:
         """
-        Закрывает обе стороны по символу (и long, и short, если используется hedge mode).
+        Закрывает обе стороны по символу (и long, и short, если используется hedge mode)
+        и дополнительно возвращает реализованный PnL по закрытым сделкам.
+
+        Формат ответа:
+        {
+            "long_closed": <dict|None>,     # ответ /fapi/v1/order для закрытия long
+            "short_closed": <dict|None>,    # ответ /fapi/v1/order для закрытия short
+            "long_realized_pnl": <float|None>,
+            "short_realized_pnl": <float|None>,
+            "total_realized_pnl": <float|None>,
+        }
         """
+        # сначала закрываем long, затем short (чтобы логика была предсказуемой)
         res_long = await self.close_long_all(symbol)
+
+        # чуть подождём, чтобы сделки успели появиться в /userTrades
+        long_pnl_dec: Optional[Decimal] = None
+        if res_long is not None:
+            long_pnl_dec = await self._get_order_realized_pnl(symbol, res_long)
+
         res_short = await self.close_short_all(symbol)
-        return {"long_closed": res_long, "short_closed": res_short}
+
+        short_pnl_dec: Optional[Decimal] = None
+        if res_short is not None:
+            short_pnl_dec = await self._get_order_realized_pnl(symbol, res_short)
+
+        total_pnl_dec: Optional[Decimal] = None
+        if long_pnl_dec is not None or short_pnl_dec is not None:
+            total = _d("0")
+            if long_pnl_dec is not None:
+                total += long_pnl_dec
+            if short_pnl_dec is not None:
+                total += short_pnl_dec
+            total_pnl_dec = total
+
+        return {
+            "long_closed": res_long,
+            "short_closed": res_short,
+            "long_realized_pnl": float(long_pnl_dec) if long_pnl_dec is not None else None,
+            "short_realized_pnl": float(short_pnl_dec) if short_pnl_dec is not None else None,
+            "total_realized_pnl": float(total_pnl_dec) if total_pnl_dec is not None else None,
+        }
+
 
     # =============================
     #        OPEN POSITIONS (UI)
@@ -584,6 +837,7 @@ class BinanceAsyncFuturesClient:
             "pnl": p.get("unRealizedProfit"),
             "entry_price": p.get("entryPrice"),
             "market_price": p.get("markPrice"),
+            "liq_price": p.get("liquidationPrice")
         }
         return out
 
@@ -611,7 +865,7 @@ async def main():
     async with BinanceAsyncFuturesClient(BINANCE_API_KEY, BINANCE_API_SECRET) as client:
         # Пример открытия позиции:
         # print(await client.open_long(symbol=symbol, qty="300", leverage=1))
-        # print(await client.open_short(symbol=symbol, qty="300", leverage=1))
+        # print(await client.open_short(symbol=symbol, qty="100", leverage=5))
 
         # Пример открытия через USDT:
         # print(await client.open_long_usdt(symbol=symbol, usdt_amount=20, leverage=3))
@@ -620,7 +874,8 @@ async def main():
         pos = await client.get_open_positions(symbol=symbol)
         print("OPEN POSITION:", pos)
 
-        print(await client.close_all_positions(symbol=symbol))
+        res = await client.close_all_positions(symbol="BIOUSDT")
+        print(res)
 
         # # Все позиции
         # all_pos = await client._all_positions_raw()

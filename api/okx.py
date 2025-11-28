@@ -677,7 +677,7 @@ class OKXAsyncClient:
         raw = await self._request_private("GET", "/api/v5/account/positions", params=params)
         items = raw.get("data") or []
         result = {}
-
+        print(items)
         if not items:
             return None
 
@@ -711,6 +711,7 @@ class OKXAsyncClient:
                 pnl = p.get("upl")
                 avg_px = p.get("avgPx")
                 mark_px = float(p.get("markPx"))
+                liq_px = p.get("liqPx")
                 if pnl is None or pnl == "":
                     if inst_id not in ticker_cache:
                         ticker_cache[inst_id] = await self._get_ticker(inst_id)
@@ -754,7 +755,8 @@ class OKXAsyncClient:
                     "leverage": str(leverage),
                     "entry_usdt": ((float(usdt_str) - float(pnl)) / float(leverage)),
                     "entry_price": avg_px, 
-                    "market_price": mark_px
+                    "market_price": mark_px,
+                    "liq_price": 0,
                 }
             except Exception:
                 continue
@@ -814,7 +816,7 @@ async def main():
     client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
     try:
         symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
-        # print(await client.open_long(symbol="BIOUSDT", qty="10", leverage=5))
+        print(await client.open_long(symbol="BIOUSDT", qty="300", leverage=5))
 
         # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
@@ -824,8 +826,8 @@ async def main():
         # # r = await client.open_short_usdt(symbol, 50, leverage=1)
         # print("OPEN SHORT:", r)
 
-        pos = await client.get_open_positions(symbol=symbol)
-        print("OPEN POSITIONS:", pos)
+        # pos = await client.get_open_positions(symbol=symbol)
+        # print("OPEN POSITIONS:", pos)
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны

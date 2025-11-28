@@ -506,6 +506,7 @@ class BybitAsyncClient:
         out["pnl"] = it[0].get("unrealisedPnl", "0")
         out["entry_price"] = it[0].get("avgPrice")
         out["market_price"] = it[0].get('markPrice')
+        out['liq_price'] = it[0].get('liqPrice')
 
 
         return out or None
@@ -546,17 +547,19 @@ async def main():
     async with BybitAsyncClient(API_KEY, API_SECRET, testnet=False) as client:
         time_start = time.time()
         # Открыть для примера
-        print(await client.open_long(symbol=symbol, qty='300', leverage=5))
+        # print(await client.open_long(symbol=symbol, qty='300', leverage=5))
         # print(await client.open_short_usdt('RESOLVUSDT', 20, leverage=1))
 
         # Посмотреть открытые позиции
+        # print(await client._get_positions_raw())
+        # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
+
         positions = await client.get_open_positions()
         print("OPEN POSITIONS:", positions)
-        # # print(await client._get_positions_raw())
-        # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
+        print(await client._get_positions_raw())
+
         res = await client.close_all_positions(symbol)
         print("CLOSE ALL:", res)
-
         # Или по отдельности:
         # await client.close_long_all(symbol)
         # await client.close_short_all(symbol)
