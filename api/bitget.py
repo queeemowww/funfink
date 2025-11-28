@@ -507,15 +507,38 @@ class BitgetAsyncClient:
 
     async def get_usdt_balance(self) -> str:
         """
-        Возвращает общий баланс (equity) в USDT для UMCBL (sum(usdtEquity)).
-        Возвращает строку-число без лишних нулей, например: "123.45".
+        Возвращает общий баланс (equity) в USDT для USDT-маржинальных перпетуалов.
+
+        1) Сначала пробуем новый v2 эндпоинт:
+           GET /api/v2/mix/account/accounts?productType=USDT-FUTURES
+        2) Если по какой-то причине он недоступен (например, старый региональный кластер),
+           откатываемся на старый v1:
+           GET /api/mix/v1/account/accounts?productType=umcbl
         """
-        data = await self._get("/api/mix/v1/account/accounts", {"productType": self.product_type})
+        # --- пробуем v2 ---
+        try:
+            data = await self._get(
+                "/api/v2/mix/account/accounts",
+                {"productType": "USDT-FUTURES"},
+            )
+        except Exception:
+            # --- fallback на v1 ---
+            data = await self._get(
+                "/api/mix/v1/account/accounts",
+                {"productType": self.product_type},  # обычно "umcbl"
+            )
+
         rows = data.get("data") or []
         total = _d("0")
         for r in rows:
-            total += _d(r.get("usdtEquity") or r.get("equity") or "0")
+            # в ответе есть и usdtEquity, и equity — подстрахуемся
+            total += _d(
+                r.get("usdtEquity")
+                or r.get("equity")
+                or "0"
+            )
         return _trim_decimals(total.normalize())
+
 
 
 
@@ -529,18 +552,19 @@ async def main():
         # print(await client.open_short_usdt(symbol, 20, leverage=5))
         
         # Позиции
-        positions = await client.get_open_positions(symbol="SOONUSDT")
-        print("OPEN POSITIONS:", positions)
-        positions = await client._all_positions()
-        print(positions)
+        # positions = await client.get_open_positions(symbol="SOONUSDT")
+        # print("OPEN POSITIONS:", positions)
+        # positions = await client._all_positions()
+        # print(positions)
 
         # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
         # print(r)
         # Закрыть и лонг, и шорт целиком (если есть)
-        res = await client.close_all_positions("SOONUSDT")
-        print("CLOSE ALL:", res)
+        # res = await client.close_all_positions("SOONUSDT")
+        # print("CLOSE ALL:", res)
 
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy"))
+        print(await client.get_usdt_balance())
 
 if __name__ == "__main__":
     asyncio.run(main())

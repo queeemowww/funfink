@@ -554,17 +554,18 @@ async def main():
         # print(await client._get_positions_raw())
         # Закрыть ВЕСЬ лонг и ВЕСЬ шорт (если есть)
 
-        positions = await client.get_open_positions()
-        print("OPEN POSITIONS:", positions)
-        print(await client._get_positions_raw())
+        # positions = await client.get_open_positions()
+        # print("OPEN POSITIONS:", positions)
+        # print(await client._get_positions_raw())
 
-        res = await client.close_all_positions(symbol)
-        print("CLOSE ALL:", res)
+        # res = await client.close_all_positions(symbol)
+        # print("CLOSE ALL:", res)
         # Или по отдельности:
         # await client.close_long_all(symbol)
         # await client.close_short_all(symbol)
         # print(float(await client.get_usdt_balance()))
         # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))
+        print(await client.get_usdt_balance())
         print(time.time()-time_start)
 
 if __name__ == "__main__":

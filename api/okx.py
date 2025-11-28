@@ -831,10 +831,10 @@ async def main():
 
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
-        r = await client.close_all_positions(symbol=symbol)
-        print("CLOSE ALL SIDES:", r)
+        # r = await client.close_all_positions(symbol=symbol)
+        # print("CLOSE ALL SIDES:", r)
 
-        # print(float(await client.get_usdt_balance()))
+        print(float(await client.get_usdt_balance()))
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=50, side="buy"))
 
     finally:

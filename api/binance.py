@@ -871,11 +871,11 @@ async def main():
         # print(await client.open_long_usdt(symbol=symbol, usdt_amount=20, leverage=3))
 
         # Позиции
-        pos = await client.get_open_positions(symbol=symbol)
-        print("OPEN POSITION:", pos)
+        # pos = await client.get_open_positions(symbol=symbol)
+        # print("OPEN POSITION:", pos)
 
-        res = await client.close_all_positions(symbol="BIOUSDT")
-        print(res)
+        # res = await client.close_all_positions(symbol="BIOUSDT")
+        # print(res)
 
         # # Все позиции
         # all_pos = await client._all_positions_raw()
