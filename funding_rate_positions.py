@@ -633,11 +633,13 @@ class Logic():
           symbol = 'BTCUSDT'
           productType = 'USDT-FUTURES' / 'USDC-FUTURES' / 'COIN-FUTURES'
         """
-        uni = self._normalize_universal(raw_symbol) or raw_symbol.upper()
+        # сначала приводим к универсальному BASE/QUOTE
+        uni = self._normalize_universal(raw_symbol) or str(raw_symbol).upper()
 
         if '/' in uni:
             base, quote = uni.split('/')
         else:
+            # fallback: пытаемся выделить базу/котировку напрямую
             m = re.match(r'^([A-Z0-9]+)(USDT|USDC|USD|BTC|ETH)$', uni)
             if m:
                 base, quote = m.group(1), m.group(2)
@@ -657,14 +659,21 @@ class Logic():
 
     def _normalize_universal(self, symbol: str) -> str:
         """
-        Приводим к BASE/QUOTE (например, 'BTCUSDT' -> 'BTC/USDT').
+        Приводим тикер к универсальному виду BASE/QUOTE, используя ту же
+        логику, что и normalize_symbol, чтобы корректно обрабатывать
+        суффиксы UMCBL, SWAP, PERP, USDTM и т.п.
+
+        Примеры:
+          'BTCUSDT'         -> 'BTC/USDT'
+          'BTCUSDT_UMCBL'   -> 'BTC/USDT'
+          'BTC-USDT-SWAP'   -> 'BTC/USDT'
+          'XBTUSDTM'        -> 'XBT/USDT'
         """
-        s = symbol.upper().strip().replace('-', '').replace('_', '')
-        for quote in ('USDT', 'USDC', 'USD', 'BTC', 'ETH'):
-            if s.endswith(quote) and len(s) > len(quote):
-                base = s[:-len(quote)]
-                return f'{base}/{quote}'
-        return symbol
+        norm = self.normalize_symbol(symbol)
+        if norm is None:
+            # на всякий случай — возвращаем верхний регистр исходника
+            return str(symbol).upper()
+        return norm
 
     def _to_exchange_symbol(self, exchange: str, universal: str) -> str:
         """

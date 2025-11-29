@@ -1,3 +1,6 @@
-from datetime import datetime
-
-print(datetime.strptime('2025-11-18 12:56:47', "%Y-%m-%d %H:%M:%S").hour)
+import re
+symbol = 'LSKUSDT_UMCBLUSDT'
+if not len(re.findall(".+USDT", symbol)):
+    symbol = symbol+'/USDT'
+symbol=symbol.replace('/','')
+print(symbol)

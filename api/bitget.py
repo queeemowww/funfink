@@ -1,4 +1,3 @@
-# bitget_async_futures_mainnet.py
 from __future__ import annotations
 
 import os
@@ -49,19 +48,22 @@ def _to_iso_ms(ms: str | int | None) -> Optional[str]:
         return None
 
 # ================================
-#          BITGET MIX (UMCBL)
+#          BITGET MIX V2
 # ================================
 class BitgetAsyncClient:
     """
-    Асинхронный клиент Bitget Mix v1 (UMCBL, USDT-марж. перпетуалы) без ccxt.
+    Асинхронный клиент Bitget Mix V2 (USDT-M перпетуалы).
 
-    Базовые правила Bitget:
-      - Подпись: sign = BASE64(HMAC_SHA256(secret, prehash))
-      - prehash = timestamp + method + requestPath + (queryString|body)
-      - Заголовки: ACCESS-KEY, ACCESS-SIGN, ACCESS-TIMESTAMP, ACCESS-PASSPHRASE, Content-Type
-      - symbol для UMCBL: 'BTCUSDT_UMCBL' (т.е. <COIN>USDT_UMCBL)
-      - productType: 'umcbl'
-      - side для ордеров: 'open_long'|'open_short'|'close_long'|'close_short'
+    Основные правила:
+      - Все REST-эндпоинты используют каталог /api/v2/mix/...
+      - productType всегда 'USDT-FUTURES' для USDT-маржинальных фьючерсов.
+      - symbol в запросах V2: 'BTCUSDT' (без '_UMCBL').
+        Для удобства клиент принимает:
+          • 'BTC/USDT'
+          • 'BTCUSDT'
+          • 'BTCUSDT_UMCBL'
+      - Позиционный режим и маржинальный режим (hedge/one-way, crossed/isolated)
+        настраиваются на стороне аккаунта. Здесь по умолчанию marginMode='crossed'.
     """
 
     def __init__(
@@ -72,38 +74,63 @@ class BitgetAsyncClient:
         *,
         timeout: float = 15.0,
         base_url: str = "https://api.bitget.com",
-        product_type: str = "umcbl",        # USDT-margined perpetuals
         margin_coin: str = "USDT",
+        margin_mode: str = "crossed",  # 'crossed' или 'isolated'
     ):
         if not api_key or not api_secret or not passphrase:
             raise ValueError("BITGET_API_KEY / BITGET_API_SECRET / BITGET_API_PASSPHRASE не заданы")
 
         self.api_key       = api_key
-        self.api_secret    = api_secret.encode("utf-8")  # raw secret
+        self.api_secret    = api_secret.encode("utf-8")
         self.passphrase    = passphrase
         self.base_url      = base_url.rstrip("/")
-        self.product_type  = product_type
-        self.margin_coin   = margin_coin
+        self.product_type  = "USDT-FUTURES"
+        self.margin_coin   = margin_coin.upper()
+        self.margin_mode   = margin_mode  # только для place-order
         self._client       = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, verify=SSL_CTX)
 
     # --- context manager ---
     async def __aenter__(self):
         return self
+
     async def __aexit__(self, exc_type, exc, tb):
         await self.close()
+
     async def close(self):
         await self._client.aclose()
 
-    # --- helpers ---
+    # --- symbol helpers ---
     @staticmethod
     def spot_like_symbol_to_umcbl(symbol: str) -> str:
         """
         'BIOUSDT' -> 'BIOUSDT_UMCBL'
         Если уже оканчивается на '_UMCBL' — вернёт как есть.
+
+        Нужен только как внутренний формат. Все реальные REST-запросы используют
+        V2-формат 'BTCUSDT', который получается через _to_v2_symbol().
         """
-        s = symbol.upper()
+        s = symbol.upper().replace("/", "")
         return s if s.endswith("_UMCBL") else f"{s}_UMCBL"
 
+    @staticmethod
+    def _to_v2_symbol(sym: str) -> str:
+        """
+        Приводит символ к виду BTCUSDT для V2 Bitget.
+
+        Принимает:
+          - 'LSK/USDT'
+          - 'LSKUSDT'
+          - 'LSKUSDT_UMCBL'
+
+        Возвращает:
+          - 'LSKUSDT'
+        """
+        s = sym.upper().replace("/", "")
+        if "_" in s:
+            s = s.split("_")[0]
+        return s
+
+    # --- signing helpers ---
     def _sign(self, ts: str, method: str, request_path: str, *, query: str = "", body: str = "") -> str:
         prehash = f"{ts}{method.upper()}{request_path}"
         if method.upper() in ("GET", "DELETE"):
@@ -130,8 +157,7 @@ class BitgetAsyncClient:
     #        LOW-LEVEL HTTP
     # =============================
     async def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        ts = str(int(time.time() * 1000))
-        # Bitget хочет queryString в виде '?a=1&b=2' ВКЛЮЧЁННЫМ в строку подписи
+        ts = _now_ms()
         query = ""
         if params:
             qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -147,7 +173,7 @@ class BitgetAsyncClient:
         return data
 
     async def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        ts = str(int(time.time() * 1000))
+        ts = _now_ms()
         body_json = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         sign = self._sign(ts, "POST", path, body=body_json)
         headers = self._auth_headers(sign, ts)
@@ -159,44 +185,75 @@ class BitgetAsyncClient:
         return data
 
     # =============================
-    #        MARKET / INSTR
+    #        MARKET / INSTRUMENTS
     # =============================
-    async def _get_ticker(self, symbol_umcbl: str) -> Dict[str, Any]:
-        data = await self._get("/api/mix/v1/market/ticker", {"symbol": symbol_umcbl})
-        return (data.get("data") or {})
+    async def _get_ticker(self, sym: str) -> Dict[str, Any]:
+        """
+        V2 тикер.
+
+        sym может быть 'LSK/USDT', 'LSKUSDT' или 'LSKUSDT_UMCBL'.
+        Возвращает первый элемент из data[0] с полями lastPr, askPr, bidPr, markPrice и т.п.
+        """
+        symbol_v2 = self._to_v2_symbol(sym)  # -> 'LSKUSDT'
+        params = {
+            "productType": self.product_type,
+            "symbol": symbol_v2,
+        }
+        raw = await self._get("/api/v2/mix/market/ticker", params)
+        rows = raw.get("data") or []
+        if not rows:
+            raise RuntimeError(f"Bitget: пустой тикер для {symbol_v2}")
+        return rows[0]
 
     async def _get_contracts(self) -> List[Dict[str, Any]]:
-        data = await self._get("/api/mix/v1/market/contracts", {"productType": self.product_type})
-        return data.get("data") or []
+        """
+        V2 Get Contract Config.
+        """
+        raw = await self._get(
+            "/api/v2/mix/market/contracts",
+            {"productType": self.product_type},
+        )
+        return raw.get("data") or []
 
     async def _get_contract_info(self, symbol_umcbl: str) -> Dict[str, Any]:
+        """
+        Возвращает объект контракта для заданного символа (может быть с '_UMCBL').
+        """
+        target = self._to_v2_symbol(symbol_umcbl)
         items = await self._get_contracts()
         for it in items:
-            if (it.get("symbol") or "").upper() == symbol_umcbl.upper():
+            if (it.get("symbol") or "").upper() == target:
                 return it
         raise RuntimeError(f"Instrument not found for {symbol_umcbl}")
 
+    # =============================
+    #        PRICE → QTY
+    # =============================
     async def usdt_to_qty(
         self,
         symbol: str,
         usdt_amount: float | str,
         *,
-        side: Literal["buy","sell"],
+        side: Literal["buy", "sell"],
     ) -> str:
         """
         Конвертация USDT → qty по лучшей стороне (ask/bid), c учётом minTradeNum и sizeScale.
         """
-        sym = self.spot_like_symbol_to_umcbl(symbol)
-        t = await self._get_ticker(sym)
-        px_str = (t.get("askPx") if side == "buy" else t.get("bidPx")) or t.get("last")
+        sym_internal = self.spot_like_symbol_to_umcbl(symbol)
+        t = await self._get_ticker(sym_internal)
+
+        if side == "buy":
+            px_str = t.get("askPr") or t.get("lastPr") or t.get("markPrice")
+        else:
+            px_str = t.get("bidPr") or t.get("lastPr") or t.get("markPrice")
+
         price = _d(px_str or "0")
         if price <= 0:
-            raise RuntimeError(f"Bad price for {sym}: {price}")
+            raise RuntimeError(f"Bad price for {symbol}: {price}")
 
-        info = await self._get_contract_info(sym)
-        # minTradeNum — минимальный размер ордера; sizeScale — количество знаков после запятой для size
+        info = await self._get_contract_info(sym_internal)
         min_trade = _d(info.get("minTradeNum", "0"))
-        size_scale = int(info.get("sizeScale", 0) or 0)
+        size_scale = int(info.get("volumePlace", 0) or 0)
         step = _d("1") / (_d(10) ** size_scale) if size_scale > 0 else _d("0")
 
         qty = _d(usdt_amount) / price
@@ -209,24 +266,38 @@ class BitgetAsyncClient:
     # =============================
     #          POSITIONS RAW
     # =============================
-    async def _all_positions(self) -> List[Dict[str, Any]]:
-        # Возвращает все позиции по productType
-        data = await self._get("/api/mix/v1/position/allPosition", {"productType": self.product_type})
-        return data.get("data") or []
-
     async def _single_position(self, symbol_umcbl: str) -> List[Dict[str, Any]]:
-        # Может вернуть две записи: long и short
-        data = await self._get(
-            "/api/mix/v1/position/singlePosition",
-            {"symbol": symbol_umcbl, "marginCoin": self.margin_coin}
+        """
+        Возвращает список позиций по одному символу (long/short) через V2 single-position.
+        """
+        symbol_v2 = self._to_v2_symbol(symbol_umcbl)
+        raw = await self._get(
+            "/api/v2/mix/position/single-position",
+            {
+                "symbol": symbol_v2,
+                "productType": self.product_type,
+                "marginCoin": self.margin_coin,
+            },
         )
-        # API иногда возвращает словарь или список — нормализуем к списку
-        raw = data.get("data")
-        if raw is None:
+        data = raw.get("data")
+        if data is None:
             return []
-        if isinstance(raw, list):
-            return raw
-        return [raw]
+        if isinstance(data, list):
+            return data
+        return [data]
+
+    async def _all_positions_raw(self) -> List[Dict[str, Any]]:
+        """
+        Возвращает 'сырые' позиции через V2 all-position.
+        """
+        raw = await self._get(
+            "/api/v2/mix/position/all-position",
+            {
+                "productType": self.product_type,
+                "marginCoin": self.margin_coin,
+            },
+        )
+        return raw.get("data") or []
 
     # =============================
     #          LEVERAGE
@@ -239,25 +310,28 @@ class BitgetAsyncClient:
         short_leverage: int | str,
     ) -> Dict[str, Any]:
         """
-        Установка плеча по сторонам. Bitget требует holdSide: 'long'/'short'.
+        Установка плеча по сторонам через V2 set-leverage.
+        Для hedge-режима требуется holdSide: 'long' / 'short'.
         """
-        sym = self.spot_like_symbol_to_umcbl(symbol)
+        symbol_v2 = self._to_v2_symbol(symbol)
 
         body_long = {
-            "symbol": sym,
-            "marginCoin": self.margin_coin,
+            "symbol": symbol_v2.lower(),
+            "productType": self.product_type,
+            "marginCoin": self.margin_coin.lower(),
             "leverage": str(long_leverage),
             "holdSide": "long",
         }
         body_short = {
-            "symbol": sym,
-            "marginCoin": self.margin_coin,
+            "symbol": symbol_v2.lower(),
+            "productType": self.product_type,
+            "marginCoin": self.margin_coin.lower(),
             "leverage": str(short_leverage),
             "holdSide": "short",
         }
-        # Последовательно; игнорируем повторную установку как ошибку
-        res1 = await self._post("/api/mix/v1/account/setLeverage", body_long)
-        res2 = await self._post("/api/mix/v1/account/setLeverage", body_short)
+
+        res1 = await self._post("/api/v2/mix/account/set-leverage", body_long)
+        res2 = await self._post("/api/v2/mix/account/set-leverage", body_short)
         return {"long": res1, "short": res2}
 
     async def set_leverage_both(self, symbol: str, leverage: int | str):
@@ -266,41 +340,78 @@ class BitgetAsyncClient:
     # =============================
     #            ORDERS
     # =============================
+    @staticmethod
+    def _map_side_to_v2(
+        side: Literal["open_long", "open_short", "close_long", "close_short"]
+    ) -> Tuple[str, str]:
+        """
+        Маппинг старых side ('open_long', ...) на V2-поля (side, tradeSide).
+        Для hedge_mode:
+          open_long  -> (buy,  open)
+          open_short -> (sell, open)
+          close_long -> (buy,  close)
+          close_short-> (sell, close)
+        """
+        if side == "open_long":
+            return "buy", "open"
+        if side == "open_short":
+            return "sell", "open"
+        if side == "close_long":
+            return "buy", "close"
+        if side == "close_short":
+            return "sell", "close"
+        raise ValueError(f"Unknown side: {side}")
+
     async def _place_order(
         self,
         *,
         symbol_umcbl: str,
-        side: Literal["open_long","open_short","close_long","close_short"],
+        side: Literal["open_long", "open_short", "close_long", "close_short"],
         size: str,
-        order_type: Literal["market","limit"] = "market",
+        order_type: Literal["market", "limit"] = "market",
         price: Optional[str] = None,
         client_oid: Optional[str] = None,
-        reduce_only: Optional[bool] = None,  # Bitget сам выводит из side, но можно явно
+        reduce_only: Optional[bool] = None,  # в V2 актуально только для one-way, здесь не используем
     ) -> Dict[str, Any]:
+        """
+        Унифицированный плейс ордер через V2 /mix/order/place-order.
+        """
+        symbol_v2 = self._to_v2_symbol(symbol_umcbl)
+        v2_side, trade_side = self._map_side_to_v2(side)
+
         body: Dict[str, Any] = {
-            "symbol": symbol_umcbl,
+            "symbol": symbol_v2,
+            "productType": self.product_type,
+            "marginMode": self.margin_mode,
             "marginCoin": self.margin_coin,
-            "side": side,
             "size": size,
+            "side": v2_side,
+            "tradeSide": trade_side,
             "orderType": order_type,
-            "timeInForceValue": "normal" if order_type == "limit" else "normal",
         }
-        if price and order_type == "limit":
+
+        if order_type == "limit":
+            if not price:
+                raise ValueError("price is required for LIMIT orders")
             body["price"] = price
+            # V2 использует поле force (timeInForceValue в V1).
+            # Для обычного лимитника достаточно GTC:
+            body["force"] = "gtc"
+
         if client_oid:
             body["clientOid"] = client_oid
-        if reduce_only is not None:
-            body["reduceOnly"] = bool(reduce_only)
 
-        data = await self._post("/api/mix/v1/order/placeOrder", body)
-        return data
+        # reduceOnly в V2 применяется только в one-way режиме; чтобы не ловить ошибки,
+        # просто не передаём его.
+
+        return await self._post("/api/v2/mix/order/place-order", body)
 
     async def open_long(
         self,
         symbol: str,
         qty: str,
         *,
-        order_type: Literal["market","limit"] = "market",
+        order_type: Literal["market", "limit"] = "market",
         price: Optional[str] = None,
         leverage: Optional[int | str] = None,
         client_oid: Optional[str] = None,
@@ -323,7 +434,7 @@ class BitgetAsyncClient:
         symbol: str,
         qty: str,
         *,
-        order_type: Literal["market","limit"] = "market",
+        order_type: Literal["market", "limit"] = "market",
         price: Optional[str] = None,
         leverage: Optional[int | str] = None,
         client_oid: Optional[str] = None,
@@ -347,53 +458,69 @@ class BitgetAsyncClient:
         symbol: str,
         usdt_amount: float | str,
         *,
-        order_type: Literal["market","limit"]="market",
-        price: Optional[str]=None,
-        leverage: Optional[int | str]=None,
-        client_oid: Optional[str]=None,
+        order_type: Literal["market", "limit"] = "market",
+        price: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+        client_oid: Optional[str] = None,
     ) -> Dict[str, Any]:
         qty = await self.usdt_to_qty(symbol, usdt_amount, side="buy")
-        return await self.open_long(symbol, qty, order_type=order_type, price=price, leverage=leverage, client_oid=client_oid)
+        return await self.open_long(
+            symbol,
+            qty,
+            order_type=order_type,
+            price=price,
+            leverage=leverage,
+            client_oid=client_oid,
+        )
 
     async def open_short_usdt(
         self,
         symbol: str,
         usdt_amount: float | str,
         *,
-        order_type: Literal["market","limit"]="market",
-        price: Optional[str]=None,
-        leverage: Optional[int | str]=None,
-        client_oid: Optional[str]=None,
+        order_type: Literal["market", "limit"] = "market",
+        price: Optional[str] = None,
+        leverage: Optional[int | str] = None,
+        client_oid: Optional[str] = None,
     ) -> Dict[str, Any]:
         qty = await self.usdt_to_qty(symbol, usdt_amount, side="sell")
-        return await self.open_short(symbol, qty, order_type=order_type, price=price, leverage=leverage, client_oid=client_oid)
+        return await self.open_short(
+            symbol,
+            qty,
+            order_type=order_type,
+            price=price,
+            leverage=leverage,
+            client_oid=client_oid,
+        )
 
     # =============================
     #        CLOSE FULL SIDE
     # =============================
-    async def _get_side_size(self, symbol_umcbl: str, want_side: Literal["long","short"]) -> Tuple[Decimal, Optional[Dict[str, Any]]]:
+    async def _get_side_size(
+        self,
+        symbol_umcbl: str,
+        want_side: Literal["long", "short"],
+    ) -> Tuple[Decimal, Optional[Dict[str, Any]]]:
         """
         Возвращает (size, raw_position) по стороне, где size — абсолютный объём (в базовой монете).
         """
         items = await self._single_position(symbol_umcbl)
         for it in items:
-            hold_side = (it.get("holdSide") or "").lower()  # 'long'|'short'
+            hold_side = (it.get("holdSide") or "").lower()
             if hold_side != want_side:
                 continue
-            # Bitget поля: total, available, locked, держим абсолют
-            # В части аккаунтов есть 'total', в части — 'size'/'holdVol'. Нормализуем:
-            for key in ("available", "total", "holdVol", "size"):
+            for key in ("available", "total"):
                 if key in it and _d(it.get(key) or "0") > 0:
                     return _d(it.get(key)), it
         return _d(0), None
 
     async def _contract_step_info(self, symbol_umcbl: str) -> Tuple[Decimal, Decimal]:
         """
-        Возвращает (minTradeNum, step) по sizeScale.
+        Возвращает (minTradeNum, step) по volumePlace.
         """
         info = await self._get_contract_info(symbol_umcbl)
         min_trade = _d(info.get("minTradeNum", "0"))
-        size_scale = int(info.get("sizeScale", 0) or 0)
+        size_scale = int(info.get("volumePlace", 0) or 0)
         step = _d("1") / (_d(10) ** size_scale) if size_scale > 0 else _d("0")
         return min_trade, step
 
@@ -437,101 +564,84 @@ class BitgetAsyncClient:
 
     async def close_all_positions(self, symbol: str) -> Dict[str, Optional[Dict[str, Any]]]:
         """
-        Закрывает обе стороны по символу (хедж-режим поддерживается server-side).
+        Закрывает обе стороны по символу (hedge-режим поддерживается Bitget server-side).
         """
-        res_long  = await self.close_long_all(symbol)
+        res_long = await self.close_long_all(symbol)
         res_short = await self.close_short_all(symbol)
         return {"long_closed": res_long, "short_closed": res_short}
 
     # =============================
     #        OPEN POSITIONS (UI)
     # =============================
-    async def _all_positions(self) -> List[Dict[str, Any]]:
-        """
-        Возвращает "сырые" позиции. Пытаемся v1→v1(v2)→v2, т.к. Bitget частично мигрировал на v2.
-        """
-        # v1 /allPosition
-        try:
-            d = await self._get("/api/mix/v1/position/allPosition", {"productType": self.product_type, "marginCoin": self.margin_coin})
-            rows = d.get("data") or []
-            if rows:
-                return rows
-        except Exception:
-            pass
-
-        # v1 /allPosition-v2
-        try:
-            d = await self._get("/api/mix/v1/position/allPosition-v2", {"productType": self.product_type, "marginCoin": self.margin_coin})
-            rows = d.get("data") or []
-            if rows:
-                return rows
-        except Exception:
-            pass
-
-        # v2 /all-position (productType меняется на "USDT-FUTURES")
-        try:
-            d = await self._get("/api/v2/mix/position/all-position", {"productType": "USDT-FUTURES", "marginCoin": self.margin_coin})
-            rows = d.get("data") or []
-            if rows:
-                return rows
-        except Exception:
-            pass
-
-        return []
-
     async def get_open_positions(
         self,
         *,
         symbol: Optional[str] = None,
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> Optional[Dict[str, Any]]:
         """
-        Унифицированный список открытых позиций.
+        Унифицированная "плоская" информация по одной позиции (первой найденной).
+
+        Если symbol передан, берём первую позицию по этому символу.
+        Если нет — берём просто первую позицию из all-position.
         """
-        items = await self._all_positions()
-        if not len(items):
+        items = await self._all_positions_raw()
+        if not items:
             return None
 
-        out: Dict[str, Any] = {"opened_at": None, 'symbol': None, 'side': None, 'usdt': None, 'leverage': None, 'pnl': None}
-        out["opened_at"] = None
-        out['symbol'] = symbol
-        out['side'] = items[0]["holdSide"]
-        out["leverage"] = items[0]["leverage"]
-        out['entry_usdt'] = out["usdt"] = float(items[0].get("averageOpenPrice")) * float(items[0].get("available")) / float(out["leverage"])
-        out['pnl'] = items[0]["unrealizedPL"]
-        out['entry_price'] = items[0]["averageOpenPrice"]
-        out['market_price'] =  items[0]['marketPrice']
-        out['liq_price'] = items[0]['liquidationPrice']
-        return out or None
+        symbol_v2: Optional[str] = None
+        if symbol is not None:
+            target = self._to_v2_symbol(symbol)
+            for it in items:
+                if (it.get("symbol") or "").upper() == target:
+                    symbol_v2 = target
+                    pos = it
+                    break
+            else:
+                return None
+        else:
+            pos = items[0]
+            symbol_v2 = pos.get("symbol")
 
+        leverage = float(pos.get("leverage") or 0) or 1.0
+        open_price = pos.get("openPriceAvg") or pos.get("averageOpenPrice") or "0"
+        available = pos.get("available") or pos.get("total") or "0"
 
+        out: Dict[str, Any] = {
+            "opened_at": None,
+            "symbol": symbol_v2,
+            "side": pos.get("holdSide"),
+            "leverage": leverage,
+            "entry_price": float(open_price),
+            "market_price": float(pos.get("markPrice") or pos.get("marketPrice") or 0),
+            "liq_price": float(pos.get("liquidationPrice") or 0),
+            "pnl": float(pos.get("unrealizedPL") or 0),
+        }
 
+        # оценочный вход в USDT = entry_price * size / leverage
+        try:
+            entry_price_f = float(open_price)
+            size_f = float(available)
+            out["entry_usdt"] = out["usdt"] = entry_price_f * size_f / leverage
+        except Exception:
+            out["entry_usdt"] = out["usdt"] = 0.0
+
+        return out
+
+    # =============================
+    #        ACCOUNT BALANCE
+    # =============================
     async def get_usdt_balance(self) -> str:
         """
-        Возвращает общий баланс (equity) в USDT для USDT-маржинальных перпетуалов.
-
-        1) Сначала пробуем новый v2 эндпоинт:
-           GET /api/v2/mix/account/accounts?productType=USDT-FUTURES
-        2) Если по какой-то причине он недоступен (например, старый региональный кластер),
-           откатываемся на старый v1:
-           GET /api/mix/v1/account/accounts?productType=umcbl
+        Возвращает общий баланс (equity) в USDT для USDT-маржинальных перпетуалов через V2.
+        GET /api/v2/mix/account/accounts?productType=USDT-FUTURES
         """
-        # --- пробуем v2 ---
-        try:
-            data = await self._get(
-                "/api/v2/mix/account/accounts",
-                {"productType": "USDT-FUTURES"},
-            )
-        except Exception:
-            # --- fallback на v1 ---
-            data = await self._get(
-                "/api/mix/v1/account/accounts",
-                {"productType": self.product_type},  # обычно "umcbl"
-            )
-
+        data = await self._get(
+            "/api/v2/mix/account/accounts",
+            {"productType": self.product_type},
+        )
         rows = data.get("data") or []
         total = _d("0")
         for r in rows:
-            # в ответе есть и usdtEquity, и equity — подстрахуемся
             total += _d(
                 r.get("usdtEquity")
                 or r.get("equity")
@@ -540,31 +650,11 @@ class BitgetAsyncClient:
         return _trim_decimals(total.normalize())
 
 
-
-
-# # ---- Пример использования ----
+# ---- Пример использования ----
 async def main():
-    symbol = "BIOUSDT"  # будет преобразовано в 'BIOUSDT_UMCBL'
+    symbol = "BIOUSDT"  # будет преобразовано в 'BIOUSDT_UMCBL' / 'BIOUSDT'
     async with BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE) as client:
-        # Примеры открытия:
-        # print(await client.open_long(symbol="SWARMSUSDT", qty='1000', leverage=5))
-        # print(await client.open_short(symbol=symbol, qty=100, leverage=5))
-        # print(await client.open_short_usdt(symbol, 20, leverage=5))
-        
-        # Позиции
-        # positions = await client.get_open_positions(symbol="SOONUSDT")
-        # print("OPEN POSITIONS:", positions)
-        # positions = await client._all_positions()
-        # print(positions)
-
-        # r = await asyncio.gather(client.get_open_positions(symbol=symbol), client.close_all_positions(symbol))
-        # print(r)
-        # Закрыть и лонг, и шорт целиком (если есть)
-        # res = await client.close_all_positions("SOONUSDT")
-        # print("CLOSE ALL:", res)
-
-        # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy"))
-        print(await client.get_usdt_balance())
+        print(await client.usdt_to_qty(symbol=symbol, usdt_amount=100, side="long"))
 
 if __name__ == "__main__":
     asyncio.run(main())
