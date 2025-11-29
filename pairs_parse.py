@@ -228,68 +228,98 @@ class Parsing():
 
     # ---------- Bitget ----------
 
+    # ---------- Bitget (v2) ----------
+
     async def bitget_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
         """
-        Bitget: umcbl(USDT-M), dmcbl(coin-M), cmcbl(USDC-M).
+        Bitget v2 Futures:
+          productType ∈ {"USDT-FUTURES", "COIN-FUTURES", "USDC-FUTURES"}.
         Используем usdtVolume (если есть) как 24h объём в USDT.
         """
+
         out: List[Dict[str, Any]] = []
         min_vol = self.MIN_24H_USDT
 
-        for productType, mark in [("umcbl", "linear"), ("dmcbl", "inverse"), ("cmcbl", "linear")]:
-            # тикеры с объёмами
-            url_tickers = "https://api.bitget.com/api/mix/v1/market/tickers"
+        # productType -> linear / inverse
+        products = [
+            ("USDT-FUTURES", "linear"),
+            ("COIN-FUTURES", "inverse"),
+            ("USDC-FUTURES", "linear"),
+        ]
+
+        for productType, mark in products:
+            # --- тикеры с объёмами (v2) ---
+            url_tickers = "https://api.bitget.com/api/v2/mix/market/tickers"
             data_t = await self.fetch_json(client, url_tickers, {"productType": productType})
             t_list = await self.safe_get(data_t, "data", default=[]) or []
+
             vol_map: Dict[str, float] = {}
             for t in t_list:
                 sym_t = t.get("symbol")
                 if not sym_t:
                     continue
+
+                # В v2 поля те же: usdtVolume / quoteVolume
                 v_raw = t.get("usdtVolume") or t.get("quoteVolume")
                 try:
                     vol = float(v_raw) if v_raw is not None else 0.0
                 except (TypeError, ValueError):
                     vol = 0.0
+
                 vol_map[sym_t] = vol
 
-            # контракты
-            url = "https://api.bitget.com/api/mix/v1/market/contracts"
+            # --- контрактная инфа (v2) ---
+            url = "https://api.bitget.com/api/v2/mix/market/contracts"
             data = await self.fetch_json(client, url, {"productType": productType})
             lst = await self.safe_get(data, "data", default=[]) or []
-            for it in lst:
-                if it.get("supportMarginCoins"):
-                    margin = (it["supportMarginCoins"][0]
-                              if isinstance(it["supportMarginCoins"], list)
-                              else it["supportMarginCoins"])
-                else:
-                    margin = it.get("marginCoin") or it.get("quoteCoin")
 
-                sym = it.get("symbol") or f"{it.get('baseCoin')}{margin}"
-                if not sym:
+            for it in lst:
+                # Нас интересуют только perpetual
+                if it.get("symbolType") != "perpetual":
                     continue
+
+                # symbol в v2 уже без _UMCBL, типа "BTCUSDT"
+                sym = it.get("symbol")
+                if not sym:
+                    base_coin = it.get("baseCoin") or ""
+                    margin_fallback = it.get("quoteCoin") or ""
+                    sym = f"{base_coin}{margin_fallback}"
 
                 vol_usdt = vol_map.get(sym, 0.0)
                 if vol_usdt < min_vol:
                     continue
 
+                # margin-asset
+                if it.get("supportMarginCoins"):
+                    margin = (
+                        it["supportMarginCoins"][0]
+                        if isinstance(it["supportMarginCoins"], list)
+                        else it["supportMarginCoins"]
+                    )
+                else:
+                    margin = it.get("quoteCoin")
+
                 base = it.get("baseCoin")
                 quote = it.get("quoteCoin") or margin
-                out.append({
-                    "exchange": "bitget",
-                    "symbol": sym,
-                    "base": base,
-                    "quote": quote,
-                    "contract_type": "perpetual",
-                    "margin_asset": margin,
-                    "settle_asset": margin,
-                    "linear_inverse": mark,
-                    "status": self.norm_status(it.get("status") or it.get("symbolStatus")),
-                    "funding_interval_h": 8,
-                    "raw": it,
-                })
-        return out
 
+                out.append(
+                    {
+                        "exchange": "bitget",
+                        "symbol": sym,                # напр. BTCUSDT / BTCUSD
+                        "base": base,
+                        "quote": quote,
+                        "contract_type": "perpetual",
+                        "margin_asset": margin,
+                        "settle_asset": margin,
+                        "linear_inverse": mark,       # "linear" или "inverse"
+                        "status": self.norm_status(it.get("symbolStatus")),
+                        # fundInterval в часах (строка) -> int, по умолчанию 8
+                        "funding_interval_h": int(it.get("fundInterval") or 8),
+                        "raw": it,
+                    }
+                )
+
+        return out
     # ---------- Binance (USDT-M Perpetual) ----------
 
     async def binance_pairs(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:

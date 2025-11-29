@@ -4,6 +4,7 @@ import json
 from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+from pandas.errors import EmptyDataError, ParserError
 import time
 import httpx
 import pandas as pd
@@ -449,24 +450,35 @@ class Logic():
 
 # ---------- 2) парсеры по биржам ----------
     def get_last_price_bitget(self, symbol: str) -> float:
-        url = "https://api.bitget.com/api/mix/v1/market/ticker"
+        """
+        Bitget v2: GET /api/v2/mix/market/symbol-price
+        Возвращаем last price (data[0]["price"]).
+        """
+        url = "https://api.bitget.com/api/v2/mix/market/symbol-price"
+
+        # symbol может быть вида BTCUSDT_UMCBL — приведём к BTCUSDT + productType
+        v2_symbol, product_type = self._bitget_v2_symbol_and_product(symbol)
+
         for _ in range(5):
             try:
-                r = self.safe_get(url, params={"symbol": symbol}, timeout=10)
+                r = self.safe_get(
+                    url,
+                    params={"symbol": v2_symbol, "productType": product_type},
+                    timeout=10,
+                )
                 data = r.json()
-                d = data.get("data")
+                d = data.get("data") or []
 
-                # data может быть либо списком, либо словарём
-                if not d:
-                    raise ValueError(f"no data for bitget symbol={symbol}: {data}")
+                if isinstance(d, list) and d:
+                    return float(d[0]["price"])
+                elif isinstance(d, dict) and "price" in d:
+                    return float(d["price"])
 
-                if isinstance(d, list):
-                    return float(d[0]["last"])
-                else:
-                    return float(d["last"])
+                raise ValueError(f"no data for bitget symbol={v2_symbol}: {data}")
 
             except Exception as e:
-                print(f"Ошибка получения цены с bitget ({symbol}): {e}")
+                print(f"Ошибка получения цены с bitget ({symbol} → {v2_symbol}): {e}")
+
         return 100.0
 
 
@@ -589,6 +601,36 @@ class Logic():
             return pd.to_datetime(int(s), unit="s", utc=True).strftime("%Y-%m-%d %H:%M:%S%z")
         except Exception:
             return None
+        
+    def _bitget_v2_symbol_and_product(self, raw_symbol: str) -> Tuple[str, str]:
+        """
+        Любой битгетовский тикер (BTCUSDT_UMCBL, BTCUSDT, BTC/USDT и т.п.)
+        → (symbol, productType) для v2:
+          symbol = 'BTCUSDT'
+          productType = 'USDT-FUTURES' / 'USDC-FUTURES' / 'COIN-FUTURES'
+        """
+        uni = self._normalize_universal(raw_symbol) or raw_symbol.upper()
+
+        if '/' in uni:
+            base, quote = uni.split('/')
+        else:
+            m = re.match(r'^([A-Z0-9]+)(USDT|USDC|USD|BTC|ETH)$', uni)
+            if m:
+                base, quote = m.group(1), m.group(2)
+            else:
+                base, quote = uni, 'USDT'
+
+        symbol = f"{base}{quote}"
+
+        if quote == 'USDT':
+            product = 'USDT-FUTURES'
+        elif quote == 'USDC':
+            product = 'USDC-FUTURES'
+        else:
+            product = 'COIN-FUTURES'
+
+        return symbol, product
+
     def _normalize_universal(self, symbol: str) -> str:
         """
         Приводим к BASE/QUOTE (например, 'BTCUSDT' -> 'BTC/USDT').
@@ -710,18 +752,26 @@ class Logic():
 
                 # ---- Bitget ----
                 if ex == 'bitget':
-                    # GET /api/mix/v1/market/history-fundRate?symbol=BTCUSDT_UMCBL&pageSize=1
-                    url = "https://api.bitget.com/api/mix/v1/market/history-fundRate"
-                    params = {"symbol": sym, "pageSize": 1}
+                    # v2: GET /api/v2/mix/market/history-fund-rate
+                    # возвращает fundingRate в долях и fundingTime в ms
+                    v2_symbol, product_type = self._bitget_v2_symbol_and_product(uni)
+
+                    url = "https://api.bitget.com/api/v2/mix/market/history-fund-rate"
+                    params = {
+                        "symbol": v2_symbol,
+                        "productType": product_type,
+                        "pageSize": "1",
+                    }
                     data = await self._get_json(client, url, params)
                     arr = data.get("data") or []
                     if arr:
                         rate = self._to_float(arr[0].get("fundingRate"))
-                        ts_utc = _ms_to_utc(arr[0].get("settleTime"))
+                        ts_utc = _ms_to_utc(arr[0].get("fundingTime"))
                         if rate is not None and ts_utc is not None:
-                            return rate * 100, ts_utc
+                            # привожу к %-формату, как у других бирж
+                            return rate * 100.0, ts_utc
                     return None
-
+                
                 # ---- Binance ----
                 if ex == 'binance':
                     # GET /fapi/v1/fundingRate?symbol=BTCUSDT&limit=1
@@ -822,35 +872,62 @@ class Logic():
             "raw_note": f"instId={inst_id}",
         }
 
-    async def fetch_bitget(self,client, row):
+    async def fetch_bitget(self, client, row):
+        """
+        Bitget v2:
+          - current funding:  GET /api/v2/mix/market/current-fund-rate
+          - next funding time: GET /api/v2/mix/market/funding-time
+        funding_time кладём как время следующего фандинга (ms → UTC string).
+        """
         s = row["symbol"]
         try:
-        
+            v2_symbol, product_type = self._bitget_v2_symbol_and_product(s)
+
+            params = {
+                "symbol": v2_symbol,
+                "productType": product_type,
+            }
+
             data_fr_task = self.fetch_json(
-                client, "https://api.bitget.com/api/mix/v1/market/current-fundRate", {"symbol": s}
+                client,
+                "https://api.bitget.com/api/v2/mix/market/current-fund-rate",
+                params,
             )
             data_ft_task = self.fetch_json(
-                client, "https://api.bitget.com/api/mix/v1/market/funding-time", {"symbol": s}
+                client,
+                "https://api.bitget.com/api/v2/mix/market/funding-time",
+                params,
             )
 
-        
             data_fr, data_ft = await asyncio.gather(data_fr_task, data_ft_task)
 
             fr = ft = None
 
+            # current funding rate
             if data_fr:
-                lst_fr = data_fr.get("data", {})
-                fr = lst_fr.get("fundingRate")
+                lst_fr = data_fr.get("data") or []
+                if isinstance(lst_fr, list) and lst_fr:
+                    fr = lst_fr[0].get("fundingRate")
+                elif isinstance(lst_fr, dict):
+                    fr = lst_fr.get("fundingRate")
 
+            # next funding time
             if data_ft:
-                lst_ft = data_ft.get("data", {})
-                ft = self.to_dt_ms(lst_ft.get("fundingTime"))
+                lst_ft = data_ft.get("data") or []
+                if isinstance(lst_ft, list) and lst_ft:
+                    ft_ms = lst_ft[0].get("nextFundingTime")
+                elif isinstance(lst_ft, dict):
+                    ft_ms = lst_ft.get("nextFundingTime")
+                else:
+                    ft_ms = None
+
+                ft = self.to_dt_ms(ft_ms)
 
             return {
-                "funding_rate": float(fr) if fr is not None else None,
+                "funding_rate": float(fr) if fr is not None else None,  # доля (0.0005)
                 "next_funding_rate": None,
-                "funding_time": ft,
-                "raw_note": f"symbol_used={s}; next_settle_time={ft}",
+                "funding_time": ft,   # время СЛЕДУЮЩЕГО фандинга
+                "raw_note": f"symbol_used={v2_symbol}; productType={product_type}",
             }
 
         except Exception as e:
@@ -969,14 +1046,42 @@ class Logic():
         return df
     
     def load_logs(self):
-        """Безопасно загружаем логи (если файла нет — создаём пустой DataFrame)."""
-        if os.path.exists(self.LOGS_PATH):
-            return pd.read_csv(self.LOGS_PATH)
-        else:
-            return pd.DataFrame(columns=[
-                "ts_utc", "symbol", "long_exchange", "short_exchange",
-                "long_funding", "short_funding", "possible_revenue","long_price", "short_price", "diff","status"
-            ])
+        """
+        Безопасно загружаем логи (если файла нет — создаём пустой DataFrame).
+        Если файл повреждён или в него одновременно кто-то пишет — не падаем, а
+        начинаем с пустого df (или с обрезанным).
+        """
+        cols = [
+            "ts_utc", "symbol", "long_exchange", "short_exchange",
+            "long_funding", "short_funding", "possible_revenue",
+            "long_price", "short_price", "diff", "qty", "status"
+        ]
+
+        if not os.path.exists(self.LOGS_PATH):
+            # файла ещё нет — просто пустой df с нужными колонками
+            return pd.DataFrame(columns=cols)
+
+        try:
+            # пробуем прочитать как есть
+            df = pd.read_csv(self.LOGS_PATH)
+        except EmptyDataError:
+            # файл есть, но пустой → просто создаём пустой df
+            print(f"⚠️ {self.LOGS_PATH} пустой, начинаю с нуля")
+            return pd.DataFrame(columns=cols)
+        except ParserError as e:
+            # файл повреждён (обрезанная строка, битые разделители, гонка записи/чтения и т.д.)
+            print(f"⚠️ Ошибка чтения {self.LOGS_PATH}: {e}. Начинаю с пустого лога.")
+            return pd.DataFrame(columns=cols)
+
+        # гарантируем наличие всех колонок
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+
+        # и порядок колонок
+        df = df[cols]
+
+        return df
 
     def compute_close_threshold_pct(self, possible_rev_frac: float) -> float:
         """
@@ -1784,7 +1889,7 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-        # print(await self.c.get_qty("binance", "okx", "TURBOUSDT"))
+
         await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         # await asyncio.gather(self.run_daily_task())
         
