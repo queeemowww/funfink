@@ -218,7 +218,7 @@ class Logic():
         self.check_price_start=10
         self.check_price_finish=59
         self.minutes_for_start_parse = 45
-        self.start_pars_pairs=2
+        self.start_pars_pairs=3
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
         # ===== Настройки =====
@@ -232,9 +232,9 @@ class Logic():
             "Pragma": "no-cache",
             "Connection": "keep-alive",
         }
-        self.MAX_CONCURRENCY = 20
+        self.MAX_CONCURRENCY = 0.5
         self.RETRIES = 3
-        self.demanded_funding_rev=0.5
+        self.demanded_funding_rev=20
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -590,17 +590,41 @@ class Logic():
         return None if v is None else str(v)
 
 
-    def to_dt_ms(self,ms: Any) -> Optional[str]:
+    def to_dt_ms(self, ms: Any) -> Optional[str]:
+        """
+        Конвертация миллисекунд в UTC-строку.
+
+        Нормализация: если биржа отдаёт время вида HH:MM:59,
+        сдвигаем на +1 секунду, чтобы получить ровный HH:MM:00.
+        Это выравнивает Binance (17:59:59) к Bybit (18:00:00) и т.п.
+        """
         try:
-            return pd.to_datetime(int(ms), unit="ms", utc=True).strftime("%Y-%m-%d %H:%M:%S%z")
+            ms_int = int(ms)
+            dt = datetime.fromtimestamp(ms_int / 1000.0, tz=timezone.utc)
+
+            # Если "одна секунда до границы" — двигаем на следующий тик
+            if dt.second == 59:
+                dt = dt + timedelta(seconds=1)
+
+            dt = dt.replace(microsecond=0)
+            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
         except Exception:
             return None
+
     
-    def to_dt_ms1(self,s: Any) -> Optional[str]:
+    def to_dt_ms1(self, s: Any) -> Optional[str]:
         try:
-            return pd.to_datetime(int(s), unit="s", utc=True).strftime("%Y-%m-%d %H:%M:%S%z")
+            sec = int(s)
+            dt = datetime.fromtimestamp(sec, tz=timezone.utc)
+
+            if dt.second == 59:
+                dt = dt + timedelta(seconds=1)
+
+            dt = dt.replace(microsecond=0)
+            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
         except Exception:
             return None
+
         
     def _bitget_v2_symbol_and_product(self, raw_symbol: str) -> Tuple[str, str]:
         """
@@ -792,50 +816,68 @@ class Logic():
             except Exception:
                 return None
 
-    # ===== Фетчеры по биржам =====
-    async def fetch_bybit(self,client: httpx.AsyncClient, row: dict) -> dict:
+    async def fetch_bybit(self, client: httpx.AsyncClient, row: dict) -> dict:
         """
-        Bybit v5. Берём последнюю запись истории как текущий/последний funding.
-        category: 'linear' для USDT/USDC, 'inverse' для coin-settle. Если не знаем — пробуем оба.
-        """
+        Bybit v5.
 
+        funding_rate        -> fundingRate из /v5/market/tickers
+        funding_time        -> nextFundingTime (ms) — ближайшая выплата фандинга
+        next_funding_time   -> funding_time + fundingIntervalHour (в миллисекундах)
+        next_funding_rate   -> Bybit не даёт ставку «через один интервал», поэтому None.
+        """
         symbol = row["symbol"]
-        linv = (row.get("linear_inverse") or "").lower()
-        categories = (["linear", "inverse"] if linv == "" else [linv])
-        fr = None
-        last = None
-        cat="linear"
+
+        fr: Optional[float] = None
+        last: Optional[dict] = None
+        nft_ms: Optional[str] = None
+        funding_interval_h: Optional[float] = None
+
         try:
             data = await self.fetch_json(
                 client,
                 "https://api.bybit.com/v5/market/tickers",
-                {"category": cat, "symbol": symbol, "limit": 1},
+                {"category": "linear", "symbol": symbol},
             )
-            items = data.get("result", {}).get("list", [])
-            
+            items = (data.get("result") or {}).get("list") or []
             if items:
-                fr = items[0].get("fundingRate")
-                nft = items[0].get("nextFundingTime")
                 last = items[0]
-                
-        except Exception:
-            print("Ебануло")
-        
-        ftime = None
-    
+                fr = self._to_float(last.get("fundingRate"))
+                nft_ms = last.get("nextFundingTime")
+                # строка, например "8"
+                interval_str = last.get("fundingIntervalHour")
+                try:
+                    funding_interval_h = float(interval_str) if interval_str not in (None, "") else None
+                except Exception:
+                    funding_interval_h = None
+        except Exception as e:
+            print(f"Ошибка получения funding с Bybit ({symbol}): {e}")
+
+        # ближайший фандинг
+        funding_time = self.to_dt_ms(nft_ms)
+
+        # следующий после него
+        next_funding_time = None
+        if nft_ms is not None:
+            try:
+                base_ms = int(nft_ms)
+                hours = funding_interval_h if (funding_interval_h is not None and funding_interval_h > 0) else 8.0
+                next_ms = base_ms + int(hours * 3600_000)
+                next_funding_time = self.to_dt_ms(next_ms)
+            except Exception:
+                next_funding_time = None
 
         return {
             "funding_rate": fr,
             "next_funding_rate": None,
-            "funding_time": self.to_dt_ms(nft),
-            "next_funding_time": None,
-            "raw_note": None if last else "no_data",
+            "funding_time": funding_time,
+            "next_funding_time": next_funding_time,
+            "raw_note": None if last is not None else "no_data",
         }
 
  
 
 
-    async def fetch_okx(self,client, row):
+    async def fetch_okx(self, client, row):
         s = row["symbol"]
         # нормализация instId: BTC-USDT-SWAP
         if "-" in s and s.endswith("-SWAP"):
@@ -850,7 +892,11 @@ class Logic():
         else:
             inst_id = f"{s}-SWAP"
 
-        data = await self.fetch_json(client, "https://www.okx.com/api/v5/public/funding-rate", {"instId": inst_id})
+        data = await self.fetch_json(
+            client,
+            "https://www.okx.com/api/v5/public/funding-rate",
+            {"instId": inst_id}
+        )
         d = (data.get("data") or [{}])[0]
 
         def _flt(x):
@@ -861,8 +907,8 @@ class Logic():
 
         fr  = _flt(d.get("fundingRate"))
         nfr = _flt(d.get("nextFundingRate"))
-        fts = d.get("fundingTime")
-        nft= d.get("nextFundingTime") # ms
+        fts = d.get("fundingTime")       # ms
+        nft = d.get("nextFundingTime")   # ms
 
         return {
             "funding_rate": fr,
@@ -872,12 +918,17 @@ class Logic():
             "raw_note": f"instId={inst_id}",
         }
 
+
     async def fetch_bitget(self, client, row):
         """
         Bitget v2:
-          - current funding:  GET /api/v2/mix/market/current-fund-rate
-          - next funding time: GET /api/v2/mix/market/funding-time
-        funding_time кладём как время следующего фандинга (ms → UTC string).
+          - текущий фандинг: GET /api/v2/mix/market/current-fund-rate
+          - расписание:      GET /api/v2/mix/market/funding-time
+
+        funding_rate        -> fundingRate (доля, например 0.0005)
+        funding_time        -> nextFundingTime (ms) — ближайшая выплата
+        next_funding_time   -> funding_time + ratePeriod (часов)
+        next_funding_rate   -> Bitget не даёт ставку «через один интервал», поэтому None.
         """
         s = row["symbol"]
         try:
@@ -901,7 +952,9 @@ class Logic():
 
             data_fr, data_ft = await asyncio.gather(data_fr_task, data_ft_task)
 
-            fr = ft = None
+            fr = None
+            ft_ms = None
+            rate_period_h: Optional[float] = None
 
             # current funding rate
             if data_fr:
@@ -909,24 +962,41 @@ class Logic():
                 if isinstance(lst_fr, list) and lst_fr:
                     fr = lst_fr[0].get("fundingRate")
                 elif isinstance(lst_fr, dict):
-                    fr = lst_fr.get("fundingRate")
+                    fr = data_fr.get("fundingRate")
 
-            # next funding time
+            # schedule: nextFundingTime + ratePeriod (hours)
             if data_ft:
                 lst_ft = data_ft.get("data") or []
+                rec = None
                 if isinstance(lst_ft, list) and lst_ft:
-                    ft_ms = lst_ft[0].get("nextFundingTime")
+                    rec = lst_ft[0]
                 elif isinstance(lst_ft, dict):
-                    ft_ms = lst_ft.get("nextFundingTime")
-                else:
-                    ft_ms = None
+                    rec = lst_ft
+                if rec:
+                    ft_ms = rec.get("nextFundingTime")
+                    rate_period_str = rec.get("ratePeriod")  # часы
+                    try:
+                        rate_period_h = float(rate_period_str) if rate_period_str not in (None, "") else None
+                    except Exception:
+                        rate_period_h = None
 
-                ft = self.to_dt_ms(ft_ms)
+            funding_time = self.to_dt_ms(ft_ms)
+
+            next_funding_time = None
+            if ft_ms is not None:
+                try:
+                    base_ms = int(ft_ms)
+                    hours = rate_period_h if (rate_period_h is not None and rate_period_h > 0) else 8.0
+                    next_ms = base_ms + int(hours * 3600_000)
+                    next_funding_time = self.to_dt_ms(next_ms)
+                except Exception:
+                    next_funding_time = None
 
             return {
-                "funding_rate": float(fr) if fr is not None else None,  # доля (0.0005)
+                "funding_rate": float(fr) if fr is not None else None,
                 "next_funding_rate": None,
-                "funding_time": ft,   # время СЛЕДУЮЩЕГО фандинга
+                "funding_time": funding_time,       # ближайший фандинг
+                "next_funding_time": next_funding_time,  # следующий после него
                 "raw_note": f"symbol_used={v2_symbol}; productType={product_type}",
             }
 
@@ -935,16 +1005,18 @@ class Logic():
                 "funding_rate": None,
                 "next_funding_rate": None,
                 "funding_time": None,
+                "next_funding_time": None,
                 "raw_note": f"bitget_fail: {e}",
             }
 
     async def fetch_binance(self, client: httpx.AsyncClient, row: dict) -> dict:
         """
         Binance USDT-perp.
-        Используем premiumIndex:
-          GET /fapi/v1/premiumIndex?symbol=BTCUSDT
-        lastFundingRate — последняя ставка
-        nextFundingTime — время следующего фандинга (ms)
+
+        funding_rate        -> lastFundingRate (последняя выплаченная ставка)
+        funding_time        -> nextFundingTime (ms) — ближайшая выплата
+        next_funding_time   -> funding_time + funding_interval (по истории, иначе 8ч по умолчанию)
+        next_funding_rate   -> Binance не даёт ставку «через один интервал», поэтому None.
         """
         s = row["symbol"]
         try:
@@ -963,13 +1035,43 @@ class Logic():
             fr  = self._to_float(d.get("lastFundingRate"))
             nft = d.get("nextFundingTime")
 
+            # Попробуем оценить интервал по истории фандинга
+            interval_ms: Optional[int] = None
+            try:
+                hist = await self.fetch_json(
+                    client,
+                    "https://fapi.binance.com/fapi/v1/fundingRate",
+                    {"symbol": s, "limit": 2},
+                )
+                if isinstance(hist, list) and len(hist) >= 2:
+                    # Binance возвращает в порядке по времени (от старого к новому)
+                    t0 = int(hist[-2].get("fundingTime"))
+                    t1 = int(hist[-1].get("fundingTime"))
+                    if t1 > t0:
+                        interval_ms = t1 - t0
+            except Exception as e_hist:
+                print(f"⚠️ не удалось получить history fundingRate для {s}: {e_hist}")
+                interval_ms = None
+
+            funding_time = self.to_dt_ms(nft)
+
+            next_funding_time = None
+            if nft is not None:
+                try:
+                    base_ms = int(nft)
+                    if interval_ms is None or interval_ms <= 0:
+                        # большинство контрактов Binance — 8 часов
+                        interval_ms = 8 * 3600_000
+                    next_ms = base_ms + interval_ms + 1
+                    next_funding_time = self.to_dt_ms(next_ms)
+                except Exception:
+                    next_funding_time = None
+
             return {
                 "funding_rate": fr,
                 "next_funding_rate": None,
-                # как и у Bybit — кладём сюда nextFundingTime,
-                # чтобы логика a_in_next/b_in_next работала с "следующим" часом
-                "funding_time": self.to_dt_ms(nft),
-                "next_funding_time": None,
+                "funding_time": funding_time,
+                "next_funding_time": next_funding_time,
                 "raw_note": None if fr is not None else "no_data",
             }
 
@@ -1116,29 +1218,61 @@ class Logic():
             logs_df_c=logs_df.copy()
             if not self.leave:
                 logs_df['status']='closed'
-            
             df = await self.collect_funding(df_pairs)
             # Сохраняем
             out_csv = self.out_csv_dir + datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
             df.to_csv(out_csv, index=False, encoding="utf-8")
-            df_funding11=df.copy()
+            df_funding11 = df.copy()
             print("Saved:", out_csv)
-            df_funding=df
-            df_funding=df_funding.dropna(subset=['funding_rate'])
-            df_funding['symbol_u']=df_funding['symbol']
-            df_funding['symbol']=df_funding['symbol_n']
 
-            df = df_funding[['symbol','symbol_u','exchange', 'funding_rate', 'funding_time']].copy()
-            df['funding_time'] = pd.to_datetime(df['funding_time'], utc=True)
+            # ================== БЛОК ФОРМИРОВАНИЯ df_result (ОБНОВЛЁННЫЙ) ==================
+            # df_funding: оставляем строки с funding_rate, добавляем нормализованный symbol
+            df_funding = df.copy()
+            df_funding = df_funding.dropna(subset=['funding_rate'])
+            df_funding['symbol_u'] = df_funding['symbol']
+            df_funding['symbol'] = df_funding['symbol_n']
 
-            # Начинаем формировать лучшие возможности
+            # приведение времени к datetime
+            df_funding['funding_time'] = pd.to_datetime(
+                df_funding['funding_time'], utc=True, errors='coerce'
+            )
+            if 'next_funding_time' in df_funding.columns:
+                df_funding['next_funding_time'] = pd.to_datetime(
+                    df_funding['next_funding_time'], utc=True, errors='coerce'
+                )
+            else:
+                df_funding['next_funding_time'] = pd.NaT
+
+            # будем работать с колонками: symbol, exchange, funding_rate, funding_time, next_funding_time
+            df_pairs_f = df_funding[['symbol',
+                                     'symbol_u',
+                                     'exchange',
+                                     'funding_rate',
+                                     'funding_time',
+                                     'next_funding_time']].copy()
+
+            # Начинаем формировать лучшие возможности (кросс всех бирж по одному symbol)
             pairs = (
-                df.merge(df[['symbol','symbol_u','exchange','funding_rate','funding_time']], on='symbol', suffixes=('_a', '_b'))
+                df_pairs_f.merge(
+                    df_pairs_f[['symbol',
+                                'symbol_u',
+                                'exchange',
+                                'funding_rate',
+                                'funding_time',
+                                'next_funding_time']],
+                    on='symbol',
+                    suffixes=('_a', '_b')
+                )
                 .query('exchange_a < exchange_b')  # убираем дубли и самосоединения
                 .copy()
             )
-            pairs['funding_time_a'] = pd.to_datetime(pairs['funding_time_a'], utc=True)
-            pairs['funding_time_b'] = pd.to_datetime(pairs['funding_time_b'], utc=True)
+
+            # приведение времён к datetime ещё раз (на всякий случай)
+            pairs['funding_time_a'] = pd.to_datetime(pairs['funding_time_a'], utc=True, errors='coerce')
+            pairs['funding_time_b'] = pd.to_datetime(pairs['funding_time_b'], utc=True, errors='coerce')
+            pairs['next_funding_time_a'] = pd.to_datetime(pairs['next_funding_time_a'], utc=True, errors='coerce')
+            pairs['next_funding_time_b'] = pd.to_datetime(pairs['next_funding_time_b'], utc=True, errors='coerce')
+
             # 3) окно "следующего часа"
             now = datetime.now(timezone.utc)
             next_hour_end = now + timedelta(hours=1)
@@ -1146,11 +1280,10 @@ class Logic():
             pairs['a_in_next'] = pairs['funding_time_a'].between(now, next_hour_end, inclusive='both')
             pairs['b_in_next'] = pairs['funding_time_b'].between(now, next_hour_end, inclusive='both')
 
-
             # оставляем только пары, где хотя бы одно время в следующем часе
             pairs = pairs[(pairs['a_in_next']) | (pairs['b_in_next'])].copy()
 
-            # 4) агрегаты по паре (мин/макс)
+            # 4) агрегаты по паре (мин/макс по ставке)
             pairs['min_rate'] = pairs[['funding_rate_a', 'funding_rate_b']].min(axis=1)
             pairs['max_rate'] = pairs[['funding_rate_a', 'funding_rate_b']].max(axis=1)
 
@@ -1162,18 +1295,25 @@ class Logic():
                 pairs['funding_rate_a'] >= pairs['funding_rate_b'],
                 pairs['exchange_a'], pairs['exchange_b']
             )
-            pairs['funding_time_a'] = pd.to_datetime(pairs['funding_time_a'], utc=True)
-            pairs['funding_time_b'] = pd.to_datetime(pairs['funding_time_b'], utc=True)
 
-            # 2) Выбираем соответствующие времена без astype()
+            # времена для min/max стороны
             pairs['min_funding_time'] = pairs['funding_time_a'].where(
                 pairs['funding_rate_a'] <= pairs['funding_rate_b'],
                 pairs['funding_time_b'],
             )
-
             pairs['max_funding_time'] = pairs['funding_time_a'].where(
                 pairs['funding_rate_a'] >= pairs['funding_rate_b'],
                 pairs['funding_time_b'],
+            )
+
+            # next_funding_time для min/max стороны
+            pairs['next_funding_time_min'] = pairs['next_funding_time_a'].where(
+                pairs['funding_rate_a'] <= pairs['funding_rate_b'],
+                pairs['next_funding_time_b'],
+            )
+            pairs['next_funding_time_max'] = pairs['next_funding_time_a'].where(
+                pairs['funding_rate_a'] >= pairs['funding_rate_b'],
+                pairs['next_funding_time_b'],
             )
 
             # 5) логика подсчёта funding_diff
@@ -1217,30 +1357,70 @@ class Logic():
                 )
             )
 
+            # ===== НОВЫЙ БЛОК: ФИЛЬТР ПО next_funding_time ПО ТВОИМ УСЛОВИЯМ =====
+            nf_min = pairs['next_funding_time_min']
+            nf_max = pairs['next_funding_time_max']
+
+            # "разные next_funding_time" — учитываем только те строки, где оба времени заданы и реально различаются
+            nf_diff = nf_min.notna() & nf_max.notna() & (nf_min != nf_max)
+
+            same_ft = pairs['min_funding_time'] == pairs['max_funding_time']
+            min_lt_max_ft = pairs['min_funding_time'] < pairs['max_funding_time']
+            min_gt_max_ft = pairs['min_funding_time'] > pairs['max_funding_time']
+
+            abs_min_gt_abs_max = pairs['min_rate'].abs() > pairs['max_rate'].abs()
+            abs_min_lt_abs_max = pairs['min_rate'].abs() < pairs['max_rate'].abs()
+
+            # "должно быть больше текущего времени + 1 час"
+            # threshold = now + 1 час (мы уже посчитали next_hour_end выше)
+            nf_min_valid = nf_min > next_hour_end
+            nf_max_valid = nf_max > next_hour_end
+
+            # 1) min_funding_time == max_funding_time
+            #    1.а) |min_rate| > |max_rate| → требуем next_funding_time_min > now+1h
+            invalid_1a = same_ft & nf_diff & abs_min_gt_abs_max & ~nf_min_valid
+
+            #    1.б) |min_rate| < |max_rate| → требуем next_funding_time_max > now+1h
+            invalid_1b = same_ft & nf_diff & abs_min_lt_abs_max & ~nf_max_valid
+
+            # 2) min_funding_time < max_funding_time → проверяем next_funding_time_min
+            invalid_2 = min_lt_max_ft & nf_diff & ~nf_min_valid
+
+            # 3) min_funding_time > max_funding_time → проверяем next_funding_time_max
+            invalid_3 = min_gt_max_ft & nf_diff & ~nf_max_valid
+
+            invalid_mask = invalid_1a | invalid_1b | invalid_2 | invalid_3
+
+            # выбрасываем пары, которые НЕ удовлетворяют условиям по next_funding_time
+            pairs = pairs[~invalid_mask].copy()
+
+            # 7) убираем пары, где биржи совпадают
             pairs = pairs[pairs['min_exchange'] != pairs['max_exchange']].copy()
-            
-            # 7) выбираем «лучшую» пару на символ (макс. метрика)
+
+            # 8) выбираем «лучшую» пару на символ (макс. метрика среди оставшихся)
             best_pairs = (
                 pairs.sort_values(['symbol', 'funding_diff_metric'], ascending=[True, False])
-                    .groupby('symbol', as_index=False)
-                    .first()
+                     .groupby('symbol', as_index=False)
+                     .first()
             )
-            
-            # 8) финальные колонки по вкусу
-            result = best_pairs[[
 
+            # 9) финальные колонки по вкусу
+            result = best_pairs[[
                 'symbol',
                 'min_rate', 'min_exchange', 'min_funding_time',
                 'max_rate', 'max_exchange', 'max_funding_time',
-                'funding_diff_metric', 'metric_reason'
+                'funding_diff_metric', 'metric_reason',
+                'next_funding_time_min', 'next_funding_time_max',
             ]].copy()
+            # ================== КОНЕЦ ОБНОВЛЁННОГО БЛОКА ==================
 
             # Пример: смотреть топ-20 «лучших» по метрике
-            result_sorted=result.sort_values('funding_diff_metric', ascending=False)
-            self.res_sorted_dir = 'temp_data/result_sorted'+ datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
-            result_sorted.to_csv(self.res_sorted_dir, index=False, encoding="utf-8")   
+            result_sorted = result.sort_values('funding_diff_metric', ascending=False)
+            self.res_sorted_dir = 'temp_data/result_sorted' + datetime.now(UTC).strftime("%Y%m%d_%H%M") + ".csv"
+            result_sorted.to_csv(self.res_sorted_dir, index=False, encoding="utf-8")
             print(result_sorted.head(5))
-            analytical_df=result_sorted.head(5)
+            analytical_df = result_sorted.head(5)
+
             text=[]
             self.all_balance = 0
             for ex in ['bybit', 'bitget', 'okx', 'binance']:
