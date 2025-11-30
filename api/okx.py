@@ -763,51 +763,131 @@ class OKXAsyncClient:
         return result or None
     
         # ------------------ баланс аккаунта (USDT) ------------------
+    # ------------------ общий баланс по USDT (все аккаунты) ------------------
     async def get_usdt_balance(self) -> str:
         """
-        Возвращает Доступный баланс аккаунта в USDT (строкой).
-        Приоритет полей OKX:
-          1) availBal — доступный баланс (если есть),
-          2) availEq   — доступная эквити (в unified-аккаунте),
-          3) cashBal   — кэш-баланс,
-          4) eq        — полная эквити по валюте.
-        Если по какой-то причине в details нет полей — пытается взять totalEq.
+        Возвращает СУММАРНЫЙ доступный баланс в USDT (строкой) по всем аккаунтам,
+        к которым есть доступ у текущего API-ключа:
+          * основной trading/unified аккаунт (account/balance),
+          * основной funding аккаунт (asset/balances),
+          * все субаккаунты (trading + funding), если ключ является мастер-аккаунтом.
+
+        Приоритет полей для trading/unified:
+          1) availBal
+          2) availEq
+          3) cashBal
+          4) eq
+
+        Для funding используем:
+          * availBal, если есть, иначе bal.
         """
+        total = _d("0")
+
+        # ---------- 1) Основной trading / unified аккаунт ----------
         raw = await self._request_private(
             "GET",
             "/api/v5/account/balance",
             params={"ccy": "USDT"},
         )
         data = raw.get("data") or []
-        if not data:
-            raise RuntimeError(f"OKX balance error: empty response | {raw}")
+        for acc in data:
+            details = acc.get("details") or []
+            for d in details:
+                if (d.get("ccy") or "").upper() != "USDT":
+                    continue
+                for key in ("availBal", "availEq", "cashBal", "eq"):
+                    v = d.get(key)
+                    if v not in (None, ""):
+                        total += _d(v)
+                        break
+                # по одной записи на валюту на аккаунт
+                break
 
-        acc = data[0]
-        details = acc.get("details") or []
-        bal_val = None
-
-        # Ищем конкретно по USDT
-        for d in details:
-            if (d.get("ccy") or "").upper() != "USDT":
-                continue
-            # Берём первое доступное по приоритету
-            for key in ("availBal", "availEq", "cashBal", "eq"):
-                v = d.get(key)
+        # ---------- 2) Основной funding-аккаунт ----------
+        try:
+            raw_f = await self._request_private(
+                "GET",
+                "/api/v5/asset/balances",
+                params={"ccy": "USDT"},
+            )
+            dlist = raw_f.get("data") or []
+            for d in dlist:
+                if (d.get("ccy") or "").upper() != "USDT":
+                    continue
+                v = d.get("availBal") or d.get("bal")
                 if v not in (None, ""):
-                    bal_val = v
+                    total += _d(v)
                     break
-            break
+        except Exception:
+            # funding может быть недоступен/отключён — просто игнорируем
+            pass
 
-        # Фолбэк: totalEq (в unified обычно в USD-эквиваленте; для USDT ≈ USDT)
-        if bal_val in (None, ""):
-            total_eq = acc.get("totalEq")
+        # ---------- 3) Все субаккаунты (если ключ — мастер) ----------
+        try:
+            raw_sub_list = await self._request_private(
+                "GET",
+                "/api/v5/users/subaccount/list"
+            )
+            sub_data = raw_sub_list.get("data") or []
+            sub_names = [s.get("subAcct") for s in sub_data if s.get("subAcct")]
+
+            for sub in sub_names:
+                # --- trading баланс субаккаунта ---
+                try:
+                    raw_sub_tr = await self._request_private(
+                        "GET",
+                        "/api/v5/account/subaccount/balances",
+                        params={"subAcct": sub},
+                    )
+                    tr_data = raw_sub_tr.get("data") or []
+                    for acc in tr_data:
+                        details = acc.get("details") or []
+                        for d in details:
+                            if (d.get("ccy") or "").upper() != "USDT":
+                                continue
+                            for key in ("availBal", "availEq", "cashBal", "eq"):
+                                v = d.get(key)
+                                if v not in (None, ""):
+                                    total += _d(v)
+                                    break
+                            break
+                except Exception:
+                    # не получилось прочитать конкретный субакк — пропускаем
+                    pass
+
+                # --- funding баланс субаккаунта ---
+                try:
+                    raw_sub_f = await self._request_private(
+                        "GET",
+                        "/api/v5/asset/subaccount/balances",
+                        params={"subAcct": sub, "ccy": "USDT"},
+                    )
+                    fd_data = raw_sub_f.get("data") or []
+                    for d in fd_data:
+                        if (d.get("ccy") or "").upper() != "USDT":
+                            continue
+                        v = d.get("availBal") or d.get("bal")
+                        if v not in (None, ""):
+                            total += _d(v)
+                            break
+                except Exception:
+                    pass
+
+        except Exception:
+            # если нет доступа к списку субакков — значит, ключ не мастер, просто игнорируем
+            pass
+
+        # ---------- фолбэк на totalEq, если ничего не нашли ----------
+        if total == 0 and data:
+            acc0 = data[0]
+            total_eq = acc0.get("totalEq")
             if total_eq not in (None, ""):
-                bal_val = total_eq
+                total = _d(total_eq)
 
-        if bal_val in (None, ""):
-            raise RuntimeError(f"OKX balance parse error: {raw}")
+        if total == 0:
+            raise RuntimeError("OKX balance parse error: no USDT balances found")
 
-        return _fmt_decimal(_d(bal_val))
+        return _fmt_decimal(total)
 
 
 # # ------------------ пример использования ------------------
@@ -817,7 +897,7 @@ async def main():
         symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
         # print(await client.open_long(symbol="BIOUSDT", qty="300", leverage=5))
 
-        print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
+        # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
         # открыть сделки (пример):
         # r = await client.open_long_usdt(symbol, 300, leverage=5)

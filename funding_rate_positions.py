@@ -232,9 +232,9 @@ class Logic():
             "Pragma": "no-cache",
             "Connection": "keep-alive",
         }
-        self.MAX_CONCURRENCY = 0.5
+        self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=20
+        self.demanded_funding_rev=0.5
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1835,6 +1835,8 @@ class Logic():
                         if df_result.iloc[i+1]['funding_diff_metric']<self.demanded_funding_rev:
                             mask_active_rest=mask[~mask['symbol'].isin(new_symbols)]
                             for idx, row in mask_active_rest.iterrows():
+                            # 1) баланс до закрытия
+                                balance_before = 0.0
                                 close_rest_sym=row['symbol']
                                 close_rest_long=row['long_exchange']
                                 close_rest_short=row['short_exchange']
@@ -1842,6 +1844,24 @@ class Logic():
                                 await asyncio.gather(self.c.close_order(symbol=close_rest_sym,exchange=close_rest_long),
                                     self.c.close_order(symbol=close_rest_sym, exchange=close_rest_short))
                                 logs_df.loc[idx, 'status'] = 'closed'
+                                                                # 3) баланс после закрытия
+                                balance_after = 0.0
+                                for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                                    balance_after += float(await self.c.dict[ex].get_usdt_balance())
+
+                                trade_pnl = balance_after - balance_before
+                                trade_pnl_pct = (trade_pnl / balance_before * 100) if balance_before > 0 else 0.0
+
+                                # обновляем "глобальный" баланс
+                                self.new_balance = balance_after
+                                self.all_balance = balance_after
+                                self.profit = trade_pnl_pct / 100
+
+                                self.tg_send(
+                                    f"💰Баланс до: {balance_before:.2f} USDT\n"
+                                    f"💰Баланс после: {balance_after:.2f} USDT\n"
+                                    f"Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)"
+                                )
                         new_row_df=pd.DataFrame([new_row])
 
                         logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
@@ -1988,7 +2008,6 @@ class Logic():
                                 self.c.close_order(symbol=symbol, exchange=long_ex),
                                 self.c.close_order(symbol=symbol, exchange=short_ex)
                             )
-
                             # 3) баланс после закрытия
                             balance_after = 0.0
                             for ex in ['bybit', 'bitget', 'okx', 'binance']:
