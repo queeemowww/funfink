@@ -1874,13 +1874,14 @@ class Logic():
 
 
     async def run_window(self):
-        self.confirmations = {}      
+        self.confirmations = {} 
+        err = False     
         while True:
             now = datetime.now()
             seconds_15 = now.minute
             logs_df=self.load_logs()
             active_logs = logs_df[logs_df['status'] == 'active'].copy()
-            if seconds_15 == 1:
+            if seconds_15 == 1 or err:
                 try:
                     # Загружаем свежий CSV и выделяем активные строки
                     logs_df = self.load_logs()
@@ -2047,6 +2048,7 @@ class Logic():
                                 print(f"⚠️ не удалось записать лог: {e}")    
 
                     except Exception as e:
+                        err = True
                         print(f"Ошибка при проверке {active_logs.iloc[i]['symbol']}: {e}")
 
                 # проверяем каждые 2 минуты, пока идёт окно
