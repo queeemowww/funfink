@@ -1927,7 +1927,7 @@ class Logic():
                                 if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
                                     print("same_hr")
                                     logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
-                                else:
+                                elif row["possible_revenue"] != abs(long_last_funding - short_last_funding):
                                     print("different _hr", row["possible_revenue"] + abs(long_last_funding - short_last_funding))
                                     logs_df.loc[idx, "possible_revenue"] = row["possible_revenue"] + abs(long_last_funding - short_last_funding)
                             except Exception as e_row:
@@ -1968,12 +1968,16 @@ class Logic():
                         
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        if seconds_15 < 30:
+                        if seconds_15 < 20:
                             self.diff_return = 0.5 - 0.8 * possible_revenue
                         elif 30 <= seconds_15 < self.minutes_for_start_parse:
                             self.diff_return = 0.45 - possible_revenue
-                        else:
+                        elif 40 <= seconds_15 < self.minutes_for_start_parse:
+                            self.diff_return = 0.4 - possible_revenue
+                        elif now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
                             self.diff_return = 0.5
+                        else:
+                            self.diff_return = 0.4 - possible_revenue
 
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
@@ -1985,12 +1989,14 @@ class Logic():
                         except:
                             self.confirmations[symbol] = 0
                         
-                        if current_old_diff >= self.diff_return:
+                        if current_old_diff >= self.diff_return and seconds_15 <= self.check_price_start + 1:
+                            self.diff_return = current_old_diff + 0.05
+                        elif current_old_diff >= self.diff_return:
                             self.confirmations[symbol] += 1
                         else:
                             self.confirmations[symbol] = 0
-                        print(self.confirmations[symbol])
-                        self.tg_send(spam=True, text=f"confirmations count = {self.confirmations[symbol]}")
+                        print(self.confirmations[symbol], "/5 подтверждений")
+                        self.tg_send(spam=True, text=f"confirmations count = {self.confirmations[symbol]}/5 подтверждений")
                         if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
                             print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             self.tg_send(
