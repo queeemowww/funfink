@@ -1971,7 +1971,7 @@ class Logic():
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
                         if seconds_15 < 20:
                             self.diff_return = 0.5 - 0.8 * possible_revenue
-                        elif 30 <= seconds_15 < self.minutes_for_start_parse:
+                        elif 30 <= seconds_15 < 40:
                             self.diff_return = 0.45 - possible_revenue
                         elif 40 <= seconds_15 < self.minutes_for_start_parse:
                             self.diff_return = 0.4 - possible_revenue
