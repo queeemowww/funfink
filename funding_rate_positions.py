@@ -1954,7 +1954,7 @@ class Logic():
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
-                        self.tg_send(spam=True, text=f"{possible_revenue} - possible revenue")
+                        self.tg_send(spam=True, text=f"{possible_revenue:.4f} - possible revenue")
                         flag = 1
                         while flag <= 3:
                             try:
