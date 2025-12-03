@@ -1874,7 +1874,8 @@ class Logic():
 
 
     async def run_window(self):
-        self.confirmations = {}      
+        self.confirmations = {}
+        bigger_revenue = False      
         while True:
             now = datetime.now()
             seconds_15 = now.minute
@@ -1973,10 +1974,13 @@ class Logic():
                         except:
                             self.confirmations[symbol] = 0
                         
-                        if current_old_diff >= self.diff_return and seconds_15 <= self.check_price_start:
+                        if current_old_diff >= self.diff_return and seconds_15 <= self.check_price_start + 1:
                             self.diff_return = current_old_diff + 0.05
-                        elif seconds_15 >= 19:
-                            if seconds_15 < 20:
+                            bigger_revenue = True
+                        else:
+                            if bigger_revenue and seconds_15 <= 19:
+                                pass
+                            elif seconds_15 <= 19:
                                 self.diff_return = 0.5 - 0.8 * possible_revenue
                             elif 20 <= seconds_15 < 30:
                                 self.diff_return = 0.45 - possible_revenue
