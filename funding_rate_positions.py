@@ -1975,10 +1975,7 @@ class Logic():
                         elif 40 <= seconds_15 < self.minutes_for_start_parse:
                             self.diff_return = 0.4 - possible_revenue
                         else:
-                            if now.hour - datetime.strptime(active_logs.iloc[i]['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
-                                self.diff_return = 0.5
-                            else:
-                                self.diff_return = 0.4 - possible_revenue
+                            self.diff_return = 0.5
 
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
