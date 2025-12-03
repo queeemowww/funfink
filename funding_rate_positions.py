@@ -217,7 +217,7 @@ class Logic():
         #время
         self.check_price_start=10
         self.check_price_finish=59
-        self.minutes_for_start_parse = 45
+        self.minutes_for_start_parse = 40
         self.start_pars_pairs=3
         #Интервал парсинга пар в часах
         self.hours_parsingpairs_interval=24
@@ -234,7 +234,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.5
+        self.demanded_funding_rev=0.4
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1874,8 +1874,7 @@ class Logic():
 
 
     async def run_window(self):
-        self.confirmations = {}
-        bigger_revenue = False      
+        self.confirmations = {}      
         while True:
             now = datetime.now()
             seconds_15 = now.minute
@@ -1950,12 +1949,13 @@ class Logic():
                 print(f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 for i in range(len(active_logs)):
                     try:
+                        time = active_logs.iloc[i]['ts_utc']
                         long_ex = active_logs.iloc[i]['long_exchange']
                         short_ex = active_logs.iloc[i]['short_exchange']
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
                         print(possible_revenue, "   possible_revenue")
-                        self.tg_send(spam=True, text=f"{possible_revenue:.4f} - possible revenue")
+                        self.tg_send(spam=True, text=f"{possible_revenue} - possible revenue")
                         flag = 1
                         while flag <= 3:
                             try:
@@ -1967,8 +1967,23 @@ class Logic():
                             except:
                                 flag += 1
                         
-                        
+
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
+                        if seconds_15 < 20:
+                            self.diff_return = 0.5 - 0.8 * possible_revenue
+                        elif 20 <= seconds_15 < self.minutes_for_start_parse:
+                            self.diff_return = 0.4 - 0.8 * possible_revenue
+                        else:
+                            if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour < 1:
+                                self.diff_return = 0.5
+                            else:
+                                self.diff_return = 0.4 - 0.8 * possible_revenue
+
+                        print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
+                        print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
+                        print(current_old_diff, self.diff_return)
+                        self.tg_send(spam=True, text=f"current long price = {long_price}, open long price = {active_logs.iloc[i]['long_price']}\ncurrent short price = {short_price}, open short price = {active_logs.iloc[i]['short_price']}\ncurrent diff = {current_old_diff}, demanded diff return = {self.diff_return}")
+
                         try:
                             self.confirmations[symbol] = self.confirmations[symbol]
                         except:
@@ -1976,26 +1991,7 @@ class Logic():
                         
                         if current_old_diff >= self.diff_return and seconds_15 <= self.check_price_start + 1:
                             self.diff_return = current_old_diff + 0.05
-                            bigger_revenue = True
-                        else:
-                            if bigger_revenue and seconds_15 <= 19:
-                                pass
-                            elif seconds_15 <= 19:
-                                self.diff_return = 0.5 - 0.8 * possible_revenue
-                            elif 20 <= seconds_15 < 30:
-                                self.diff_return = 0.45 - possible_revenue
-                            elif 30 <= seconds_15 < self.minutes_for_start_parse:
-                                self.diff_return = 0.4 - possible_revenue
-                            else:
-                                self.diff_return = 0.5
-
-                        print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
-                        print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
-                        print(current_old_diff, self.diff_return)
-                        self.tg_send(spam=True, text=f"current long price = {long_price:.4f}, open long price = {active_logs.iloc[i]['long_price']:.4f}\ncurrent short price = {short_price:.4f}, open short price = {active_logs.iloc[i]['short_price']:.4f}\ncurrent diff = {current_old_diff:.4f}, demanded diff return = {self.diff_return:.4f}")
-
-
-                        if current_old_diff >= self.diff_return:
+                        elif current_old_diff >= self.diff_return:
                             self.confirmations[symbol] += 1
                         else:
                             self.confirmations[symbol] = 0
