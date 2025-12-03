@@ -1980,7 +1980,7 @@ class Logic():
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
-                        self.tg_send(spam=True, text=f"current long price = {long_price}, open long price = {active_logs.iloc[i]['long_price']}\ncurrent short price = {short_price}, open short price = {active_logs.iloc[i]['short_price']}\ncurrent diff = {current_old_diff}, demanded diff return = {self.diff_return}")
+                        self.tg_send(spam=True, text=f"current long price = {long_price:.4f}, open long price = {active_logs.iloc[i]['long_price']:.4f}\ncurrent short price = {short_price:.4f}, open short price = {active_logs.iloc[i]['short_price']:.4f}\ncurrent diff = {current_old_diff:.4f}, demanded diff return = {self.diff_return:.4f}")
 
                         try:
                             self.confirmations[symbol] = self.confirmations[symbol]
