@@ -1744,6 +1744,13 @@ class Logic():
 
                                     await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
                                     self.c.close_order(sym_close,short_ex_close))
+                                    mask_closed = (
+                                        (logs_df["symbol"] == sym_close) &
+                                        (logs_df["long_exchange"] == long_ex_close) &
+                                        (logs_df["short_exchange"] == short_ex_close) &
+                                        (logs_df["status"] == "active")
+                                    )
+                                    logs_df.loc[mask_closed, "status"] = "closed"
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
@@ -1765,6 +1772,14 @@ class Logic():
 
                                 await asyncio.gather(self.c.close_order(symbol=sym,exchange=long_ex_close),
                                     self.c.close_order(symbol=sym,exchange=short_ex_close))
+                                    # 👇 помечаем эту строку как закрытую
+                                mask_closed = (
+                                    (logs_df["symbol"] == sym) &
+                                    (logs_df["long_exchange"] == long_ex_close) &
+                                    (logs_df["short_exchange"] == short_ex_close) &
+                                    (logs_df["status"] == "active")
+                                )
+                                logs_df.loc[mask_closed, "status"] = "closed"
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
@@ -1869,7 +1884,14 @@ class Logic():
                             new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
                         else:
                             logs_df.to_csv(self.logs_path, index=False)   
-                i+=1                   
+                i+=1   
+                # 👇 ДОБАВЬ ЭТО ПЕРЕД print("Код занял времени...")
+            try:
+                logs_df.to_csv(self.logs_path, index=False)
+                print(f"✅ Финально сохранили logs в {self.logs_path}")
+            except Exception as e:
+                print(f"⚠️ не удалось финально сохранить logs: {e}")
+                
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
@@ -1880,7 +1902,7 @@ class Logic():
             seconds_15 = now.minute
             logs_df=self.load_logs()
             active_logs = logs_df[logs_df['status'] == 'active'].copy()
-            if seconds_15 == 7:
+            if seconds_15 == 2:
                 try:
                     # Загружаем свежий CSV и выделяем активные строки
                     logs_df = self.load_logs()
