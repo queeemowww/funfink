@@ -453,18 +453,18 @@ class BinanceAsyncFuturesClient:
         )
 
         # Только для MARKET – сразу навешиваем стоп-лосс
-        if order_type == "MARKET":
-            try:
-                # даём бирже чуть обновить positionRisk, чтобы появилась ликвидация
-                await asyncio.sleep(0.1)
+        # if order_type == "MARKET":
+        #     try:
+        #         # даём бирже чуть обновить positionRisk, чтобы появилась ликвидация
+        #         await asyncio.sleep(0.1)
                 
-                await self._create_stop_loss_for_position(
-                    symbol,
-                    side="long",
-                    client_oid=client_oid,
-                )
-            except Exception as e:
-                print(f"Ошибка при создании стоп-лосса для LONG {symbol}: {e}")
+        #         await self._create_stop_loss_for_position(
+        #             symbol,
+        #             side="long",
+        #             client_oid=client_oid,
+        #         )
+        #     except Exception as e:
+        #         print(f"Ошибка при создании стоп-лосса для LONG {symbol}: {e}")
 
         return order
 
@@ -495,16 +495,16 @@ class BinanceAsyncFuturesClient:
             reduce_only=False,
         )
 
-        if order_type == "MARKET":
-            try:
-                await asyncio.sleep(0.1)
-                await self._create_stop_loss_for_position(
-                    symbol,
-                    side="short",
-                    client_oid=client_oid,
-                )
-            except Exception as e:
-                print(f"Ошибка при создании стоп-лосса для SHORT {symbol}: {e}")
+        # if order_type == "MARKET":
+        #     try:
+        #         await asyncio.sleep(0.1)
+        #         await self._create_stop_loss_for_position(
+        #             symbol,
+        #             side="short",
+        #             client_oid=client_oid,
+        #         )
+        #     except Exception as e:
+        #         print(f"Ошибка при создании стоп-лосса для SHORT {symbol}: {e}")
 
         return order
 

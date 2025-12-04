@@ -1880,7 +1880,7 @@ class Logic():
             seconds_15 = now.minute
             logs_df=self.load_logs()
             active_logs = logs_df[logs_df['status'] == 'active'].copy()
-            if seconds_15 == 1:
+            if seconds_15 == 7:
                 try:
                     # Загружаем свежий CSV и выделяем активные строки
                     logs_df = self.load_logs()
@@ -1974,7 +1974,7 @@ class Logic():
                         elif 20 <= seconds_15 < self.minutes_for_start_parse:
                             self.diff_return = 0.4 - 0.8 * possible_revenue
                         else:
-                            if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour < 1:
+                            if now.hour - datetime.strptime(time, "%Y-%m-%d %H:%M:%S").hour < 1:
                                 self.diff_return = 0.5
                             else:
                                 self.diff_return = 0.4 - 0.8 * possible_revenue
