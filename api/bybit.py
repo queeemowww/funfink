@@ -356,6 +356,180 @@ class BybitAsyncClient:
             return _d(0), 0, want_side
         return best
 
+    from decimal import Decimal
+
+    def _fmt_qty(self, qty: Decimal, step: Decimal) -> str:
+        """Формат qty строго по точности шага."""
+        if step and step > 0:
+            scale = max(-step.as_tuple().exponent, 0)
+            return f"{qty:.{scale}f}"
+        s = format(qty, "f").rstrip("0").rstrip(".")
+        return s if s else "0"
+
+    async def cancel_symbol_orders(
+        self,
+        symbol: str,
+        *,
+        category: Literal["linear", "inverse"] = "linear",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Отменяет ВСЕ типы ордеров по symbol (active/conditional/TP-SL/trailing),
+        чтобы ничего не мешало reduceOnly-закрытию. :contentReference[oaicite:2]{index=2}
+        """
+        try:
+            return await self._post_private("/v5/order/cancel-all", {"category": category, "symbol": symbol})
+        except Exception:
+            return None
+
+    async def _close_side_qty(
+        self,
+        symbol: str,
+        *,
+        want_pos_side: Literal["buy", "sell"],   # какая позиция сейчас (buy=long, sell=short)
+        qty_to_close: float | str | Decimal,
+        category: Literal["linear","inverse"] = "linear",
+        position_idx: Optional[int] = None,
+        order_link_id: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+        slippage_percent: Optional[str] = "5",
+        sleep_after: float = 0.45,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Закрыть позицию на конкретный qty (контракты) по выбранной стороне (long/short).
+        """
+        if cancel_orders:
+            await self.cancel_symbol_orders(symbol, category=category)
+
+        pos_size, pos_idx_found, _ = await self._find_side_position(
+            symbol, want_side=want_pos_side, category=category
+        )
+        if pos_size <= 0:
+            return None
+
+        want = _d(qty_to_close)
+        if want <= 0:
+            return None
+
+        min_qty, qty_step = await self._get_instrument_lot_filters(symbol, category)
+
+        # Нельзя закрыть больше чем есть
+        remaining = min(want, pos_size)
+
+        # Под шаг
+        if qty_step > 0:
+            remaining = _round_step(remaining, qty_step)
+
+        if remaining <= 0:
+            return None
+
+        # Если запрошено меньше minOrderQty — лучше явно сообщить (иначе будет reject)
+        if min_qty > 0 and remaining < min_qty and pos_size >= min_qty:
+            raise ValueError(f"Bybit: qty_to_close={remaining} < minOrderQty={min_qty} for {symbol}")
+
+        close_order_side = "Sell" if want_pos_side == "buy" else "Buy"
+        pos_idx = position_idx if position_idx is not None else pos_idx_found
+
+        if order_link_id is None:
+            order_link_id = f"close_{'long' if want_pos_side=='buy' else 'short'}_{uuid.uuid4().hex[:10]}"
+
+        last_res: Optional[Dict[str, Any]] = None
+
+        for _ in range(max(1, attempts)):
+            cur_size, cur_idx, _ = await self._find_side_position(symbol, want_side=want_pos_side, category=category)
+            if cur_size <= 0 or remaining <= 0:
+                break
+
+            this_qty = min(remaining, cur_size)
+            if qty_step > 0:
+                this_qty = _round_step(this_qty, qty_step)
+
+            if this_qty <= 0:
+                break
+
+            body: Dict[str, Any] = {
+                "category": category,
+                "symbol": symbol,
+                "side": close_order_side,
+                "orderType": "Market",
+                "qty": self._fmt_qty(this_qty, qty_step),
+                "reduceOnly": True,
+                "timeInForce": "IOC",
+                "orderLinkId": order_link_id,
+                "positionIdx": pos_idx if pos_idx is not None else cur_idx,
+            }
+
+            # Slippage protection для market (поддерживается create-order) :contentReference[oaicite:3]{index=3}
+            if slippage_percent is not None:
+                body["slippageToleranceType"] = "Percent"
+                body["slippageTolerance"] = str(slippage_percent)
+
+            last_res = await self._post_private("/v5/order/create", body)
+
+            await asyncio.sleep(sleep_after)
+
+            # Пытаемся понять, сколько реально закрыли (рынок обычно закрывает сразу)
+            new_size, _, _ = await self._find_side_position(symbol, want_side=want_pos_side, category=category)
+            closed = cur_size - new_size
+            if closed > 0:
+                remaining = remaining - closed
+            else:
+                # если размер не изменился — дальше долбить бессмысленно
+                break
+
+        return last_res
+
+    async def close_long_qty(
+        self,
+        symbol: str,
+        size: float | str | Decimal,
+        *,
+        category: Literal["linear","inverse"] = "linear",
+        position_idx: Optional[int] = None,
+        order_link_id: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+        slippage_percent: Optional[str] = "5",
+    ) -> Optional[Dict[str, Any]]:
+        # long позиция на Bybit = side "Buy"; закрываем "Sell", reduceOnly
+        return await self._close_side_qty(
+            symbol,
+            want_pos_side="buy",
+            qty_to_close=size,
+            category=category,
+            position_idx=position_idx,
+            order_link_id=order_link_id,
+            cancel_orders=cancel_orders,
+            attempts=attempts,
+            slippage_percent=slippage_percent,
+        )
+
+    async def close_short_qty(
+        self,
+        symbol: str,
+        size: float | str | Decimal,
+        *,
+        category: Literal["linear","inverse"] = "linear",
+        position_idx: Optional[int] = None,
+        order_link_id: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+        slippage_percent: Optional[str] = "5",
+    ) -> Optional[Dict[str, Any]]:
+        # short позиция на Bybit = side "Sell"; закрываем "Buy", reduceOnly
+        return await self._close_side_qty(
+            symbol,
+            want_pos_side="sell",
+            qty_to_close=size,
+            category=category,
+            position_idx=position_idx,
+            order_link_id=order_link_id,
+            cancel_orders=cancel_orders,
+            attempts=attempts,
+            slippage_percent=slippage_percent,
+        )
+
+
    # ------------ ЗАКРЫТИЕ ПОЗИЦИЙ (ВСЕЙ) ------------
     async def close_long_all(
         self,
@@ -547,7 +721,7 @@ async def main():
     async with BybitAsyncClient(API_KEY, API_SECRET, testnet=False) as client:
         time_start = time.time()
         # Открыть для примера
-        # print(await client.open_long(symbol=symbol, qty='300', leverage=5))
+        # print(await client.open_short(symbol=symbol, qty='120', leverage=1))
         # print(await client.open_short_usdt('RESOLVUSDT', 20, leverage=1))
 
         # Посмотреть открытые позиции
@@ -561,7 +735,7 @@ async def main():
         # res = await client.close_all_positions(symbol)
         # print("CLOSE ALL:", res)
         # Или по отдельности:
-        # await client.close_long_all(symbol)
+        print(await client.close_short_qty(symbol, 50))
         # await client.close_short_all(symbol)
         # print(float(await client.get_usdt_balance()))
         # print(type(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=60, side="buy")))

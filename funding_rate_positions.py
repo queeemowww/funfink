@@ -215,7 +215,7 @@ class Logic():
         self.TG_CHAT = os.getenv("TG_CHAT")
         self.diff_return=0.15
         #время
-        self.check_price_start=10
+        self.check_price_start=3
         self.check_price_finish=59
         self.minutes_for_start_parse = 40
         self.start_pars_pairs=3
@@ -234,7 +234,7 @@ class Logic():
         }
         self.MAX_CONCURRENCY = 20
         self.RETRIES = 3
-        self.demanded_funding_rev=0.4
+        self.demanded_funding_rev=0.2
 
     async def _position_risk_snapshot(self, exchange: str, symbol: str) -> dict | None:
         """
@@ -1548,7 +1548,7 @@ class Logic():
                         )
 
                         logs_df.loc[idx, 'status'] = 'closed'
-                    
+                logs_df.to_csv(self.logs_path, index=False)
                         
             i=0 
 
@@ -1744,13 +1744,13 @@ class Logic():
 
                                     await asyncio.gather(self.c.close_order(sym_close,long_ex_close),
                                     self.c.close_order(sym_close,short_ex_close))
-                                    mask_closed = (
-                                        (logs_df["symbol"] == sym_close) &
-                                        (logs_df["long_exchange"] == long_ex_close) &
-                                        (logs_df["short_exchange"] == short_ex_close) &
-                                        (logs_df["status"] == "active")
+                                    mask_close_log = (
+                                        (logs_df['symbol'] == sym_close) &
+                                        (logs_df['long_exchange'] == long_ex_close) &
+                                        (logs_df['short_exchange'] == short_ex_close) &
+                                        (logs_df['status'] == 'active')
                                     )
-                                    logs_df.loc[mask_closed, "status"] = "closed"
+                                    logs_df.loc[mask_close_log, 'status'] = 'closed'
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
@@ -1772,14 +1772,13 @@ class Logic():
 
                                 await asyncio.gather(self.c.close_order(symbol=sym,exchange=long_ex_close),
                                     self.c.close_order(symbol=sym,exchange=short_ex_close))
-                                    # 👇 помечаем эту строку как закрытую
-                                mask_closed = (
-                                    (logs_df["symbol"] == sym) &
-                                    (logs_df["long_exchange"] == long_ex_close) &
-                                    (logs_df["short_exchange"] == short_ex_close) &
-                                    (logs_df["status"] == "active")
+                                mask_close_log = (
+                                    (logs_df['symbol'] == sym) &
+                                    (logs_df['long_exchange'] == long_ex_close) &
+                                    (logs_df['short_exchange'] == short_ex_close) &
+                                    (logs_df['status'] == 'active')
                                 )
-                                logs_df.loc[mask_closed, "status"] = "closed"
+                                logs_df.loc[mask_close_log, 'status'] = 'closed'
                                 print(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 self.tg_send(f'Открываем позицию по {sym}, лонг {long_ex} , шорт {short_ex}')
                                 qty = await self.c.get_qty(long_ex=long_ex, short_ex=short_ex, sym=sym)
@@ -1877,32 +1876,27 @@ class Logic():
                                     f"💰Баланс после: {balance_after:.2f} USDT\n"
                                     f"Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)"
                                 )
-                        new_row_df=pd.DataFrame([new_row])
+                        new_row_df = pd.DataFrame([new_row])
 
-                        logs_df = pd.concat([logs_df, pd.DataFrame([new_row])], ignore_index=True)
-                        if os.path.exists(self.logs_path):
-                            new_row_df.to_csv(self.logs_path, mode="a", header=False, index=False)
-                        else:
-                            logs_df.to_csv(self.logs_path, index=False)   
-                i+=1   
-                # 👇 ДОБАВЬ ЭТО ПЕРЕД print("Код занял времени...")
-            try:
-                logs_df.to_csv(self.logs_path, index=False)
-                print(f"✅ Финально сохранили logs в {self.logs_path}")
-            except Exception as e:
-                print(f"⚠️ не удалось финально сохранить logs: {e}")
-                
+                        # добавляем новую строку в общий DataFrame
+                        logs_df = pd.concat([logs_df, new_row_df], ignore_index=True)
+
+                        # 👇 ВСЕГДА перезаписываем целиком актуальное состояние
+                        logs_df.to_csv(self.logs_path, index=False)
+ 
+                i+=1                   
             print(f"Код занял времени {time_finish-time_start:.2f} секунд")
 
 
     async def run_window(self):
         self.confirmations = {}      
+        self.part = {}
         while True:
             now = datetime.now()
             seconds_15 = now.minute
             logs_df=self.load_logs()
             active_logs = logs_df[logs_df['status'] == 'active'].copy()
-            if seconds_15 == 2:
+            if seconds_15 == 1:
                 try:
                     # Загружаем свежий CSV и выделяем активные строки
                     logs_df = self.load_logs()
@@ -1949,7 +1943,7 @@ class Logic():
                                 if now.hour - datetime.strptime(row['ts_utc'], "%Y-%m-%d %H:%M:%S").hour <= 1:
                                     print("same_hr")
                                     logs_df.loc[idx, "possible_revenue"] = abs(long_last_funding - short_last_funding)
-                                elif row["possible_revenue"] != abs(long_last_funding - short_last_funding):
+                                else:
                                     print("different _hr", row["possible_revenue"] + abs(long_last_funding - short_last_funding))
                                     logs_df.loc[idx, "possible_revenue"] = row["possible_revenue"] + abs(long_last_funding - short_last_funding)
                             except Exception as e_row:
@@ -1967,17 +1961,15 @@ class Logic():
 
             # работаем только с 5-й по 45-ю минуту включительно
             if self.check_price_start <= seconds_15 <= self.check_price_finish and not active_logs[active_logs['status']=='active'].empty:
-                self.tg_send(spam=True, text=f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 print(f"🟢 {now.strftime('%H:%M:%S')} — выполняем проверку позиций...")
                 for i in range(len(active_logs)):
                     try:
-                        time = active_logs.iloc[i]['ts_utc']
                         long_ex = active_logs.iloc[i]['long_exchange']
                         short_ex = active_logs.iloc[i]['short_exchange']
                         possible_revenue = active_logs.iloc[i]['possible_revenue']
                         symbol = active_logs.iloc[i]['symbol']
+                        qty = float(active_logs.iloc[i]['qty'])
                         print(possible_revenue, "   possible_revenue")
-                        self.tg_send(spam=True, text=f"{possible_revenue} - possible revenue")
                         flag = 1
                         while flag <= 3:
                             try:
@@ -1991,35 +1983,30 @@ class Logic():
                         
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
-                        if seconds_15 < 20:
-                            self.diff_return = 0.5 - 0.8 * possible_revenue
-                        elif 20 <= seconds_15 < self.minutes_for_start_parse:
-                            self.diff_return = 0.4 - 0.8 * possible_revenue
+                        if seconds_15 < 30:
+                            self.diff_return = 0.6 - 0.8 * possible_revenue
+                        elif 30 <= seconds_15 < self.minutes_for_start_parse:
+                            self.diff_return = 0.55 - 0.8 * possible_revenue
                         else:
-                            if now.hour - datetime.strptime(time, "%Y-%m-%d %H:%M:%S").hour < 1:
-                                self.diff_return = 0.5
+                            if now.hour - datetime.strptime(active_logs.iloc[i]['ts_utc'], "%Y-%m-%d %H:%M:%S").hour >= 1:
+                                self.diff_return = 0.55 - 0.8 * possible_revenue
                             else:
-                                self.diff_return = 0.4 - 0.8 * possible_revenue
+                                self.diff_return = 0.6
 
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
-                        self.tg_send(spam=True, text=f"current long price = {long_price}, open long price = {active_logs.iloc[i]['long_price']}\ncurrent short price = {short_price}, open short price = {active_logs.iloc[i]['short_price']}\ncurrent diff = {current_old_diff}, demanded diff return = {self.diff_return}")
-
                         try:
                             self.confirmations[symbol] = self.confirmations[symbol]
                         except:
                             self.confirmations[symbol] = 0
                         
-                        if current_old_diff >= self.diff_return and seconds_15 <= self.check_price_start + 1:
-                            self.diff_return = current_old_diff + 0.05
-                        elif current_old_diff >= self.diff_return:
+                        if current_old_diff >= self.diff_return:
                             self.confirmations[symbol] += 1
                         else:
                             self.confirmations[symbol] = 0
-                        print(self.confirmations[symbol], "/5 подтверждений")
-                        self.tg_send(spam=True, text=f"confirmations count = {self.confirmations[symbol]}/5 подтверждений")
-                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 5:
+                        print(self.confirmations[symbol], '/ 3')
+                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 3:
                             print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
                             self.tg_send(
                                 f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. "
@@ -2031,11 +2018,24 @@ class Logic():
                             for ex in ['bybit', 'bitget', 'okx', 'binance']:
                                 balance_before += float(await self.c.dict[ex].get_usdt_balance())
 
+                            try:
+                                self.part[symbol] = self.part[symbol]
+                            except:
+                                self.part[symbol] = 1
+
+                            if qty < 10:
+                                qty = qty / 10
+                            if self.part / 10 == 1:
+                                qty = qty * 10
                             # 2) закрываем пару
                             await asyncio.gather(
-                                self.c.close_order(symbol=symbol, exchange=long_ex),
-                                self.c.close_order(symbol=symbol, exchange=short_ex)
+                                self.c.dict[long_ex].close_long_qty(symbol=symbol, size = qty),
+                                self.c.dict[short_ex].close_short_qty(symbol=symbol, size = qty)
                             )
+                            self.part[symbol] += 1
+                            if not self.part / 10 == 1:
+                                continue
+
                             # 3) баланс после закрытия
                             balance_after = 0.0
                             for ex in ['bybit', 'bitget', 'okx', 'binance']:

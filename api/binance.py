@@ -11,7 +11,7 @@ import urllib.parse
 from typing import Optional, Literal, Dict, Any, List, Tuple
 
 import httpx
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP  # <= добавь ROUND_UP
 from datetime import datetime, timezone
 import ssl
 from dotenv import load_dotenv
@@ -31,8 +31,17 @@ def _round_step(value: Decimal, step: Decimal) -> Decimal:
     q = (value / step).to_integral_value(rounding=ROUND_DOWN)
     return q * step
 
+
+
+def _round_step_up(value: Decimal, step: Decimal) -> Decimal:
+    if step == 0:
+        return value
+    q = (value / step).to_integral_value(rounding=ROUND_UP)
+    return q * step
+
+
 def _trim_decimals(x: Decimal) -> str:
-    s = format(x, "f").rstrip("0").rstrip(".")
+    s = format(x, "f").rstrip(".")
     return s if s else "0"
 
 def _now_ms() -> str:
@@ -92,6 +101,33 @@ class BinanceAsyncFuturesClient:
     async def close(self):
         await self._client.aclose()
 
+    async def _symbol_qty_step_info(self, symbol: str, *, market: bool) -> Tuple[Decimal, Decimal]:
+        """
+        Возвращает (min_qty, step) для qty.
+        Для MARKET стараемся взять MARKET_LOT_SIZE, иначе LOT_SIZE.
+        """
+        info = await self._get_symbol_info(symbol)
+        filters = info.get("filters") or []
+
+        primary = "MARKET_LOT_SIZE" if market else "LOT_SIZE"
+        fallback = "LOT_SIZE"
+
+        def _extract(ftype: str) -> Optional[Tuple[Decimal, Decimal]]:
+            for f in filters:
+                if f.get("filterType") == ftype:
+                    return _d(f.get("minQty", "0")), _d(f.get("stepSize", "0"))
+            return None
+
+        got = _extract(primary)
+        if got is not None:
+            return got
+
+        got = _extract(fallback)
+        if got is not None:
+            return got
+
+        return _d("0"), _d("0")
+
     # --- helpers ---
     @staticmethod
     def spot_like_symbol(symbol: str) -> str:
@@ -129,6 +165,29 @@ class BinanceAsyncFuturesClient:
         r = await self._client.get(url)
         r.raise_for_status()
         return r.json()
+    
+    async def _get_mark_price(self, symbol: str) -> Decimal:
+        """
+        Возвращает markPrice из /fapi/v1/premiumIndex или 0, если не удалось.
+        """
+        sym = self.spot_like_symbol(symbol)
+        try:
+            data = await self._public_get("/fapi/v1/premiumIndex", {"symbol": sym})
+            return _d(data.get("markPrice") or "0")
+        except Exception:
+            return _d("0")
+
+    async def _get_last_price(self, symbol: str) -> Decimal:
+        """
+        Возвращает последнюю цену из /fapi/v1/ticker/price или 0.
+        """
+        sym = self.spot_like_symbol(symbol)
+        try:
+            data = await self._public_get("/fapi/v1/ticker/price", {"symbol": sym})
+            return _d(data.get("price") or "0")
+        except Exception:
+            return _d("0")
+
 
     async def _signed_request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         import httpx  # убедись, что httpx импортирован вверху файла
@@ -246,26 +305,65 @@ class BinanceAsyncFuturesClient:
         side: Literal["buy", "sell"],
     ) -> str:
         """
-        Конвертация USDT → qty по лучшей стороне (ask/bid) с учётом LOT_SIZE.
+        Конвертация USDT → qty по "адекватной" цене:
+          1) bookTicker (bid/ask)
+          2) markPrice
+          3) last price
+        Если все источники дают 0 или None — кидаем понятную ошибку.
         """
         sym = self.spot_like_symbol(symbol)
-        t = await self._get_ticker(sym)
-        px_str: Optional[str]
-        if side == "buy":
-            px_str = t.get("askPrice") or t.get("bidPrice") or t.get("price")
-        else:
-            px_str = t.get("bidPrice") or t.get("askPrice") or t.get("price")
-        price = _d(px_str or "0")
-        if price <= 0:
-            raise RuntimeError(f"Bad price for {sym}: {price}")
 
+        # 1) Пытаемся взять bid/ask из bookTicker
+        t = await self._get_ticker(sym)
+        bid_dec = _d(t.get("bidPrice") or "0")
+        ask_dec = _d(t.get("askPrice") or "0")
+
+        price = _d("0")
+        if side == "buy":
+            # покупаем по ask, если он > 0, иначе fallback на bid
+            if ask_dec > 0:
+                price = ask_dec
+            elif bid_dec > 0:
+                price = bid_dec
+        else:
+            # продаём по bid, если он > 0, иначе fallback на ask
+            if bid_dec > 0:
+                price = bid_dec
+            elif ask_dec > 0:
+                price = ask_dec
+
+        # 2) Если bookTicker не дал нормальную цену — пробуем markPrice
+        mark_dec = _d("0")
+        if price <= 0:
+            mark_dec = await self._get_mark_price(sym)
+            if mark_dec > 0:
+                price = mark_dec
+
+        # 3) Если всё ещё 0 — пробуем last price
+        last_dec = _d("0")
+        if price <= 0:
+            last_dec = await self._get_last_price(sym)
+            if last_dec > 0:
+                price = last_dec
+
+        # Если все источники мёртвые — валимся с понятной ошибкой
+        if price <= 0:
+            raise RuntimeError(
+                f"Bad price for {sym}: "
+                f"bid={bid_dec}, ask={ask_dec}, mark={mark_dec}, last={last_dec}"
+            )
+
+        # Дальше всё как раньше — считаем qty с учётом LOT_SIZE
         min_qty, step = await self._symbol_step_info(sym)
+
         qty = _d(usdt_amount) / price
         if step > 0:
             qty = _round_step(qty, step)
         if qty < min_qty:
             qty = min_qty
+
         return _trim_decimals(qty)
+
 
     # =============================
     #          LEVERAGE
@@ -282,9 +380,7 @@ class BinanceAsyncFuturesClient:
         }
         return await self._signed_post("/fapi/v1/leverage", params)
 
-    # =============================
-    #            ORDERS
-    # =============================
+
     async def _place_order(
         self,
         *,
@@ -295,12 +391,8 @@ class BinanceAsyncFuturesClient:
         price: Optional[str] = None,
         client_oid: Optional[str] = None,
         reduce_only: Optional[bool] = None,
+        position_side: Optional[Literal["BOTH", "LONG", "SHORT"]] = None,  # <= NEW
     ) -> Dict[str, Any]:
-        """
-        Создать ордер.
-        Для one-way режима достаточно side BUY/SELL.
-        Для hedge режима можно дополнительно передавать positionSide, но здесь не трогаем.
-        """
         sym = self.spot_like_symbol(symbol)
         params: Dict[str, Any] = {
             "symbol": sym,
@@ -308,17 +400,74 @@ class BinanceAsyncFuturesClient:
             "type": order_type,
             "quantity": quantity,
         }
+        if position_side is not None:
+            params["positionSide"] = position_side
+
         if order_type == "LIMIT":
             if not price:
                 raise ValueError("price is required for LIMIT orders")
             params["price"] = price
             params["timeInForce"] = "GTC"
+
         if client_oid:
             params["newClientOrderId"] = client_oid
+
         if reduce_only is not None:
             params["reduceOnly"] = "true" if reduce_only else "false"
 
         return await self._signed_post("/fapi/v1/order", params)
+
+    async def _close_side_fully(
+        self,
+        symbol: str,
+        want_side: Literal["long", "short"],
+        *,
+        max_attempts: int = 6,
+        sleep_after: float = 0.2
+    ) -> List[Dict[str, Any]]:
+        orders: List[Dict[str, Any]] = []
+
+        for _ in range(max_attempts):
+            size, pos = await self._get_side_size(symbol, want_side)
+            if size <= 0:
+                break
+
+            # qty-фильтр именно для MARKET
+            min_qty, step = await self._symbol_qty_step_info(symbol, market=True)
+
+            qty = size
+            if qty < min_qty:
+                qty = min_qty
+
+            # ключевой момент: округляем ВВЕРХ, чтобы не оставлять хвост
+            if step > 0:
+                qty = _round_step_up(qty, step)
+
+            qty_str = _trim_decimals(qty)
+
+            # hedge-mode поддержка
+            ps = None
+            if isinstance(pos, dict):
+                ps_val = pos.get("positionSide")
+                if ps_val in ("BOTH", "LONG", "SHORT"):
+                    ps = ps_val
+
+            order_side: Literal["BUY", "SELL"] = "SELL" if want_side == "long" else "BUY"
+
+            order = await self._place_order(
+                symbol=symbol,
+                side=order_side,
+                quantity=qty_str,
+                order_type="MARKET",
+                reduce_only=True,
+                position_side=ps,
+            )
+            orders.append(order)
+
+            await asyncio.sleep(sleep_after)
+
+        return orders
+
 
     async def _create_stop_loss_for_position(
         self,
@@ -679,12 +828,13 @@ class BinanceAsyncFuturesClient:
         return last_pnl
 
 
-    async def close_long_all(self, symbol: str) -> Optional[Dict[str, Any]]:
+    async def close_long_qty(self, symbol: str, size = None) -> Optional[Dict[str, Any]]:
         """
         Закрыть весь long по символу (если есть).
         В one-way режиме — SELL reduceOnly.
         """
-        size, pos = await self._get_side_size(symbol, "long")
+        if not size:
+            size, pos = await self._get_side_size(symbol, "long")
         if size <= 0:
             return None
         min_qty, step = await self._symbol_step_info(symbol)
@@ -701,12 +851,13 @@ class BinanceAsyncFuturesClient:
             reduce_only=True,
         )
 
-    async def close_short_all(self, symbol: str) -> Optional[Dict[str, Any]]:
+    async def close_short_qty(self, symbol: str, size = None) -> Optional[Dict[str, Any]]:
         """
         Закрыть весь short по символу (если есть).
         В one-way режиме — BUY reduceOnly.
         """
-        size, pos = await self._get_side_size(symbol, "short")
+        if not size:
+            size, pos = await self._get_side_size(symbol, "short")
         if size <= 0:
             return None
         min_qty, step = await self._symbol_step_info(symbol)
@@ -724,50 +875,45 @@ class BinanceAsyncFuturesClient:
         )
 
     async def close_all_positions(self, symbol: str) -> Dict[str, Any]:
-        """
-        Закрывает обе стороны по символу (и long, и short, если используется hedge mode)
-        и дополнительно возвращает реализованный PnL по закрытым сделкам.
-
-        Формат ответа:
-        {
-            "long_closed": <dict|None>,     # ответ /fapi/v1/order для закрытия long
-            "short_closed": <dict|None>,    # ответ /fapi/v1/order для закрытия short
-            "long_realized_pnl": <float|None>,
-            "short_realized_pnl": <float|None>,
-            "total_realized_pnl": <float|None>,
-        }
-        """
-        # сначала закрываем long, затем short (чтобы логика была предсказуемой)
-        res_long = await self.close_long_all(symbol)
-
-        # чуть подождём, чтобы сделки успели появиться в /userTrades
-        long_pnl_dec: Optional[Decimal] = None
-        if res_long is not None:
-            long_pnl_dec = await self._get_order_realized_pnl(symbol, res_long)
-
-        res_short = await self.close_short_all(symbol)
-
-        short_pnl_dec: Optional[Decimal] = None
-        if res_short is not None:
-            short_pnl_dec = await self._get_order_realized_pnl(symbol, res_short)
-
-        total_pnl_dec: Optional[Decimal] = None
-        if long_pnl_dec is not None or short_pnl_dec is not None:
+        long_orders = await self._close_side_fully(symbol, "long")
+        long_pnl_dec = None
+        if long_orders:
             total = _d("0")
+            any_found = False
+            for o in long_orders:
+                p = await self._get_order_realized_pnl(symbol, o)
+                if p is not None:
+                    total += p
+                    any_found = True
+            long_pnl_dec = total if any_found else None
+
+        short_orders = await self._close_side_fully(symbol, "short")
+        short_pnl_dec = None
+        if short_orders:
+            total = _d("0")
+            any_found = False
+            for o in short_orders:
+                p = await self._get_order_realized_pnl(symbol, o)
+                if p is not None:
+                    total += p
+                    any_found = True
+            short_pnl_dec = total if any_found else None
+
+        total_pnl_dec = None
+        if long_pnl_dec is not None or short_pnl_dec is not None:
+            total_pnl_dec = _d("0")
             if long_pnl_dec is not None:
-                total += long_pnl_dec
+                total_pnl_dec += long_pnl_dec
             if short_pnl_dec is not None:
-                total += short_pnl_dec
-            total_pnl_dec = total
+                total_pnl_dec += short_pnl_dec
 
         return {
-            "long_closed": res_long,
-            "short_closed": res_short,
+            "long_closed": long_orders[-1] if long_orders else None,
+            "short_closed": short_orders[-1] if short_orders else None,
             "long_realized_pnl": float(long_pnl_dec) if long_pnl_dec is not None else None,
             "short_realized_pnl": float(short_pnl_dec) if short_pnl_dec is not None else None,
             "total_realized_pnl": float(total_pnl_dec) if total_pnl_dec is not None else None,
         }
-
 
     # =============================
     #        OPEN POSITIONS (UI)
@@ -865,7 +1011,7 @@ async def main():
     async with BinanceAsyncFuturesClient(BINANCE_API_KEY, BINANCE_API_SECRET) as client:
         # Пример открытия позиции:
         # print(await client.open_long(symbol=symbol, qty="300", leverage=1))
-        # print(await client.open_short(symbol=symbol, qty="100", leverage=5))
+        # print(await client.open_short(symbol=symbol, qty="120", leverage=1))
 
         # Пример открытия через USDT:
         # print(await client.open_long_usdt(symbol=symbol, usdt_amount=20, leverage=3))
@@ -877,13 +1023,15 @@ async def main():
         # res = await client.close_all_positions(symbol="BIOUSDT")
         # print(res)
 
+        res = await client.close_short_qty(symbol=symbol, size=300)
+
         # # Все позиции
         # all_pos = await client._all_positions_raw()
         # print("ALL POSITIONS:", all_pos)
 
-        # Баланс
-        bal = await client.get_usdt_balance()
-        print("USDT BALANCE:", bal)
+        # # Баланс
+        # bal = await client.get_usdt_balance()
+        # print("USDT BALANCE:", bal)
 
 
 if __name__ == "__main__":

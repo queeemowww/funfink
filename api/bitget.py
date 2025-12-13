@@ -33,7 +33,7 @@ def _round_step(value: Decimal, step: Decimal) -> Decimal:
     return q * step
 
 def _trim_decimals(x: Decimal) -> str:
-    s = format(x, "f").rstrip("0").rstrip(".")
+    s = format(x, "f").rstrip(".")
     return s if s else "0"
 
 def _now_ms() -> str:
@@ -183,6 +183,52 @@ class BitgetAsyncClient:
         if data.get("code") not in ("00000", 0, "0"):
             raise RuntimeError(f"Bitget error: {self._err(data)} | {data}")
         return data
+
+    async def cancel_open_orders(self) -> Optional[Dict[str, Any]]:
+        """
+        Отменяет ВСЕ активные лимит/маркет ордера (pending) по продукту.
+        (У эндпоинта нет фильтра по symbol)
+        """
+        try:
+            return await self._post(
+                "/api/v2/mix/order/cancel-all-orders",
+                {"productType": self.product_type, "marginCoin": self.margin_coin},
+            )
+        except Exception:
+            return None
+
+    async def cancel_plan_orders(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Отменяет trigger/plan ордера по symbol (освобождает locked часть позиции).
+        Если передать symbol+productType — отменит все plan/trigger по этому symbol. :contentReference[oaicite:2]{index=2}
+        """
+        try:
+            symbol_v2 = self._to_v2_symbol(symbol)
+            return await self._post(
+                "/api/v2/mix/order/cancel-plan-order",
+                {
+                    "symbol": symbol_v2,
+                    "productType": self.product_type,
+                    "marginCoin": self.margin_coin,
+                },
+            )
+        except Exception:
+            return None
+
+    async def flash_close(self, symbol: str, hold_side: Optional[Literal["long", "short"]] = None) -> Dict[str, Any]:
+        """
+        Flash Close Position: закрывает позицию по рынку.
+        В hedge-mode можно указать holdSide=long/short, иначе закроет всё. :contentReference[oaicite:3]{index=3}
+        """
+        symbol_v2 = self._to_v2_symbol(symbol)
+        body: Dict[str, Any] = {
+            "symbol": symbol_v2,
+            "productType": self.product_type,
+        }
+        if hold_side:
+            body["holdSide"] = hold_side
+        return await self._post("/api/v2/mix/order/close-positions", body)
+
 
     # =============================
     #        MARKET / INSTRUMENTS
@@ -502,17 +548,195 @@ class BitgetAsyncClient:
         want_side: Literal["long", "short"],
     ) -> Tuple[Decimal, Optional[Dict[str, Any]]]:
         """
-        Возвращает (size, raw_position) по стороне, где size — абсолютный объём (в базовой монете).
+        size = total (если есть) иначе available+locked (иначе available).
         """
         items = await self._single_position(symbol_umcbl)
         for it in items:
             hold_side = (it.get("holdSide") or "").lower()
             if hold_side != want_side:
                 continue
-            for key in ("available", "total"):
-                if key in it and _d(it.get(key) or "0") > 0:
-                    return _d(it.get(key)), it
+
+            total = _d(it.get("total") or "0")
+            available = _d(it.get("available") or "0")
+            locked = _d(it.get("locked") or "0")
+
+            size = total
+            if size <= 0:
+                if locked > 0:
+                    size = available + locked
+                else:
+                    size = available
+
+            if size > 0:
+                return size, it
+
         return _d(0), None
+
+    from decimal import Decimal
+
+    async def _close_side_qty(
+        self,
+        symbol: str,
+        want_side: Literal["long", "short"],
+        qty: float | str | Decimal,
+        *,
+        order_type: Literal["market", "limit"] = "market",
+        price: Optional[str] = None,
+        client_oid: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+        sleep_after: float = 0.35,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Закрыть позицию на КОНКРЕТНЫЙ size (кол-во контрактов/монет) для указанной стороны.
+        Делает несколько попыток, если биржа закрыла меньше (редко, но бывает при занятой позиции).
+        """
+        sym = self.spot_like_symbol_to_umcbl(symbol)
+
+        # Освобождаем locked/занятый объём
+        if cancel_orders:
+            await self.cancel_plan_orders(symbol)
+            await self.cancel_open_orders()
+
+        pos_size, _ = await self._get_side_size(sym, want_side)
+        if pos_size <= 0:
+            return None
+
+        min_trade, step = await self._contract_step_info(sym)
+
+        want = _d(qty)
+        if want <= 0:
+            return None
+
+        # Нельзя закрыть больше чем есть
+        remaining_to_close = min(want, pos_size)
+
+        def _round_for_contract(x: Decimal) -> Decimal:
+            if step > 0:
+                x = _round_step(x, step)  # ROUND_DOWN чтобы не превысить
+            return x
+
+        remaining_to_close = _round_for_contract(remaining_to_close)
+        if remaining_to_close <= 0:
+            return None
+
+        # Если меньше minTradeNum — пытаемся закрыть хотя бы minTradeNum (если позиция позволяет),
+        # иначе закрываем то, что есть (бывает маленькая позиция).
+        if min_trade > 0 and remaining_to_close < min_trade:
+            if pos_size >= min_trade:
+                remaining_to_close = _round_for_contract(min_trade)
+            else:
+                remaining_to_close = _round_for_contract(pos_size)
+
+        last_res: Optional[Dict[str, Any]] = None
+
+        for _ in range(max(1, attempts)):
+            # Обновим фактический размер перед попыткой
+            cur_size, _ = await self._get_side_size(sym, want_side)
+            if cur_size <= 0:
+                break
+
+            to_close = min(remaining_to_close, cur_size)
+            to_close = _round_for_contract(to_close)
+            if to_close <= 0:
+                break
+
+            # В hedge-mode: close long => side=buy, close short => side=sell (Bitget V2 правило)
+            if want_side == "long":
+                close_side = "close_long"
+            else:
+                close_side = "close_short"
+
+            last_res = await self._place_order(
+                symbol_umcbl=sym,
+                side=close_side,
+                size=_trim_decimals(to_close),
+                order_type=order_type,
+                price=price,
+                client_oid=client_oid,
+                reduce_only=None,
+            )
+
+            await asyncio.sleep(sleep_after)
+
+            remaining_to_close = remaining_to_close - to_close
+            if remaining_to_close <= 0:
+                break
+
+        return last_res
+
+    async def close_long_qty(
+        self,
+        symbol: str,
+        size: float | str | Decimal,
+        *,
+        order_type: Literal["market", "limit"] = "market",
+        price: Optional[str] = None,
+        client_oid: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """Закрыть LONG на конкретный size."""
+        return await self._close_side_qty(
+            symbol, "long", size,
+            order_type=order_type, price=price, client_oid=client_oid,
+            cancel_orders=cancel_orders, attempts=attempts,
+        )
+
+    async def close_short_qty(
+        self,
+        symbol: str,
+        size: float | str | Decimal,
+        *,
+        order_type: Literal["market", "limit"] = "market",
+        price: Optional[str] = None,
+        client_oid: Optional[str] = None,
+        cancel_orders: bool = True,
+        attempts: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """Закрыть SHORT на конкретный size."""
+        return await self._close_side_qty(
+            symbol, "short", size,
+            order_type=order_type, price=price, client_oid=client_oid,
+            cancel_orders=cancel_orders, attempts=attempts,
+        )
+
+
+    async def _close_side_fully(
+        self,
+        symbol: str,
+        want_side: Literal["long", "short"],
+        *,
+        attempts: int = 4,
+        size = None
+    ) -> Optional[Dict[str, Any]]:
+        sym = self.spot_like_symbol_to_umcbl(symbol)
+
+        # 1) освобождаем locked (plan/trigger + обычные ордера)
+        await self.cancel_plan_orders(symbol)
+        await self.cancel_open_orders()
+
+        last_res: Optional[Dict[str, Any]] = None
+
+        for i in range(attempts):
+            if not size:
+                size, _ = await self._get_side_size(sym, want_side)
+            if size <= 0:
+                break
+
+            # 2) закрываем маркетом без size
+            try:
+                last_res = await self.flash_close(symbol, hold_side=want_side)
+            except Exception as e:
+                # если flash-close недоступен/ошибка — можно оставить fallback на size-based close,
+                # но чаще flash-close хватает.
+                raise
+
+            # rate limit у flash close: 1 req/sec :contentReference[oaicite:4]{index=4}
+            await asyncio.sleep(1.05)
+
+        return last_res
+
 
     async def _contract_step_info(self, symbol_umcbl: str) -> Tuple[Decimal, Decimal]:
         """
@@ -524,51 +748,18 @@ class BitgetAsyncClient:
         step = _d("1") / (_d(10) ** size_scale) if size_scale > 0 else _d("0")
         return min_trade, step
 
-    async def close_long_all(self, symbol: str) -> Optional[Dict[str, Any]]:
-        sym = self.spot_like_symbol_to_umcbl(symbol)
-        size, _ = await self._get_side_size(sym, "long")
-        if size <= 0:
-            return None
-        min_trade, step = await self._contract_step_info(sym)
-        qty = size
-        if step > 0:
-            qty = _round_step(qty, step)
-        if qty < min_trade:
-            qty = min_trade
-        return await self._place_order(
-            symbol_umcbl=sym,
-            side="close_long",
-            size=_trim_decimals(qty),
-            order_type="market",
-            reduce_only=True,
-        )
+    async def close_long_all(self, symbol: str, size = None) -> Optional[Dict[str, Any]]:
+        return await self._close_side_fully(symbol, "long", size=size)
 
-    async def close_short_all(self, symbol: str) -> Optional[Dict[str, Any]]:
-        sym = self.spot_like_symbol_to_umcbl(symbol)
-        size, _ = await self._get_side_size(sym, "short")
-        if size <= 0:
-            return None
-        min_trade, step = await self._contract_step_info(sym)
-        qty = size
-        if step > 0:
-            qty = _round_step(qty, step)
-        if qty < min_trade:
-            qty = min_trade
-        return await self._place_order(
-            symbol_umcbl=sym,
-            side="close_short",
-            size=_trim_decimals(qty),
-            order_type="market",
-            reduce_only=True,
-        )
+    async def close_short_all(self, symbol: str, size = None) -> Optional[Dict[str, Any]]:
+        return await self._close_side_fully(symbol, "short", size=size)
+
 
     async def close_all_positions(self, symbol: str) -> Dict[str, Optional[Dict[str, Any]]]:
-        """
-        Закрывает обе стороны по символу (hedge-режим поддерживается Bitget server-side).
-        """
         res_long = await self.close_long_all(symbol)
         res_short = await self.close_short_all(symbol)
         return {"long_closed": res_long, "short_closed": res_short}
+
 
     # =============================
     #        OPEN POSITIONS (UI)
@@ -654,7 +845,9 @@ class BitgetAsyncClient:
 async def main():
     symbol = "BIOUSDT"  # будет преобразовано в 'BIOUSDT_UMCBL' / 'BIOUSDT'
     async with BitgetAsyncClient(BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE) as client:
-        print(await client.usdt_to_qty(symbol=symbol, usdt_amount=100, side="long"))
+        # print(await client.usdt_to_qty(symbol=symbol, usdt_amount=100, side="long"))
+        # print(await client.open_short(symbol=symbol, qty=300, leverage=1))
+        print(await client.close_short_qty(symbol=symbol, size=150))
 
 if __name__ == "__main__":
     asyncio.run(main())

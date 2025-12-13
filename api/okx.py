@@ -54,7 +54,7 @@ def _round_step(value: Decimal, step: Decimal) -> Decimal:
     return q * step
 
 def _fmt_decimal(x: Decimal) -> str:
-    s = format(x, "f").rstrip("0").rstrip(".")
+    s = format(x, "f").rstrip(".")
     return s if s else "0"
 
 def _safe_clordid(prefix: str = "o") -> str:
@@ -451,16 +451,135 @@ class OKXAsyncClient:
         min_sz = _d(ins.get("minSz", "1") or "1")
         return lot_sz, min_sz
 
+    async def _get_contract_spec(self, inst_id: str) -> tuple[Decimal, Decimal, Decimal]:
+        """
+        Возвращает (ctVal, lotSz, minSz):
+          ctVal  — базовая валюта на 1 контракт (coin/contract)
+          lotSz  — шаг по контрактам (sz step)
+          minSz  — минимальный размер в контрактах
+        """
+        ins = await self._get_instrument(inst_id)
+        ct_val = _d(ins.get("ctVal", "1") or "1")
+        lot_sz = _d(ins.get("lotSz", "1") or "1")
+        min_sz = _d(ins.get("minSz", "1") or "1")
+        return ct_val, lot_sz, min_sz
+
+    async def _close_side_coin_size(
+        self,
+        symbol: str,
+        want_side: Literal["long", "short"],
+        coin_size: float | str | Decimal,
+        *,
+        attempts: int = 3,
+        sleep_after: float = 0.35,
+        cl_ord_id_prefix: str = "cX",
+        tag: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Закрывает позицию на КОНКРЕТНОЕ количество монет (coin amount),
+        конвертируя в sz (контракты) через ctVal и квантуя по lotSz/minSz.
+        """
+        inst_id = to_okx_inst_id(symbol)
+        coin_need = _d(coin_size).copy_abs()
+        if coin_need <= 0:
+            return None
+
+        ct_val, lot_sz, min_sz = await self._get_contract_spec(inst_id)
+
+        # coin -> contracts (sz)
+        if ct_val <= 0:
+            raise RuntimeError(f"Bad ctVal for {inst_id}: {ct_val}")
+        remaining_sz = coin_need / ct_val  # в контрактах
+
+        # квантуем вниз под lotSz
+        if lot_sz > 0:
+            remaining_sz = _round_step(remaining_sz, lot_sz)
+
+        if remaining_sz <= 0:
+            return None
+
+        last_res: Optional[Dict[str, Any]] = None
+
+        for _ in range(max(1, attempts)):
+            pos_mode, long_pos, short_pos = await self._find_position(inst_id)
+            pos = long_pos if want_side == "long" else short_pos
+            if not pos:
+                break
+
+            mgn_mode = (pos.get("mgnMode") or "").lower() or "cross"
+            pos_side = want_side if (pos_mode == "long_short_mode") else None
+
+            pos_sz = _d(pos.get("pos", "0")).copy_abs()  # текущая позиция в контрактах
+            if pos_sz <= 0:
+                break
+
+            # не закрываем больше чем есть
+            sz_to_close = min(remaining_sz, pos_sz)
+
+            # квантование
+            if lot_sz > 0:
+                sz_to_close = _round_step(sz_to_close, lot_sz)
+
+            if sz_to_close <= 0:
+                break
+
+            # если меньше minSz — закрываем minSz (если позиция позволяет), иначе всё что есть
+            if min_sz > 0 and sz_to_close < min_sz:
+                if pos_sz >= min_sz:
+                    sz_to_close = _round_step(min_sz, lot_sz) if lot_sz > 0 else min_sz
+                else:
+                    sz_to_close = _round_step(pos_sz, lot_sz) if lot_sz > 0 else pos_sz
+
+            if sz_to_close <= 0:
+                break
+
+            order = {
+                "instId": inst_id,
+                "tdMode": mgn_mode,
+                "side": "sell" if want_side == "long" else "buy",  # long закрываем sell, short закрываем buy
+                "ordType": "market",
+                "sz": _fmt_decimal(sz_to_close),
+                "reduceOnly": "true",
+                "clOrdId": _safe_clordid(cl_ord_id_prefix),
+            }
+            if tag:
+                order["tag"] = tag
+            if pos_side:
+                order["posSide"] = pos_side
+
+            last_res = await self._post_order_with_retry(order)
+
+            await asyncio.sleep(sleep_after)
+
+            # обновим остаток по факту
+            _, long2, short2 = await self._find_position(inst_id)
+            pos2 = long2 if want_side == "long" else short2
+            new_sz = _d((pos2 or {}).get("pos", "0")).copy_abs()
+            closed = pos_sz - new_sz
+            if closed > 0:
+                remaining_sz -= closed
+            else:
+                # если позиция не изменилась — дальше долбить бессмысленно
+                break
+
+            if remaining_sz <= 0:
+                break
+
+        return last_res
+
+
     # -------- закрытие ВЕСЬ ЛОНГ --------
-    async def close_long_all(
+    async def close_long_qty(
         self,
         symbol: str,
         *,
         cl_ord_id_prefix: str = "cL",
         tag: Optional[str] = None,
+        size=None,  # <-- ВАЖНО: теперь size = кол-во МОНЕТ (coin amount)
     ) -> Optional[Dict[str, Any]]:
         """
-        Закрывает ВЕСЬ лонг по symbol (если есть). Возвращает ответ OKX или None.
+        Если size=None -> закрыть ВЕСЬ лонг (официальный close-position).
+        Если size задан -> закрыть ЛОНГ на конкретное количество МОНЕТ через reduceOnly market.
         """
         inst_id = to_okx_inst_id(symbol)
         pos_mode, long_pos, _ = await self._find_position(inst_id)
@@ -468,54 +587,35 @@ class OKXAsyncClient:
             return None
 
         mgn_mode = (long_pos.get("mgnMode") or "").lower() or "cross"
-        pos_side = None
-        if pos_mode == "long_short_mode":
-            pos_side = "long"
+        pos_side = "long" if (pos_mode == "long_short_mode") else None
 
-        # 1) официальный полный close
-        body = {"instId": inst_id, "mgnMode": mgn_mode}
-        if pos_side:
-            body["posSide"] = pos_side
-        try:
-            return await self._post_private("/api/v5/trade/close-position", body)
-        except Exception:
-            # 2) фолбэк: рыночный reduceOnly SELL на весь объём
-            qty_abs = _d(long_pos.get("pos", "0")).copy_abs()
-            if qty_abs <= 0:
-                return None
-
-            lot_sz, min_sz = await self._get_lot_filters(inst_id)
-            # квантуем под шаг/минимум
-            if lot_sz > 0:
-                qty_abs = _round_step(qty_abs, lot_sz)
-            if qty_abs < min_sz:
-                qty_abs = min_sz
-
-            order = {
-                "instId": inst_id,
-                "tdMode": mgn_mode,
-                "side": "sell",
-                "ordType": "market",
-                "sz": _fmt_decimal(qty_abs),
-                "reduceOnly": "true",
-                "clOrdId": _safe_clordid(cl_ord_id_prefix),
-            }
-            if tag:
-                order["tag"] = tag
+        if size is None:
+            body = {"instId": inst_id, "mgnMode": mgn_mode}
             if pos_side:
-                order["posSide"] = "long"   # закрываем лонг продажей в hedge-режиме
-            return await self._post_order_with_retry(order)
+                body["posSide"] = pos_side
+            return await self._post_private("/api/v5/trade/close-position", body)
 
-    # -------- закрытие ВЕСЬ ШОРТ --------
-    async def close_short_all(
+        # частичное закрытие
+        return await self._close_side_coin_size(
+            symbol,
+            "long",
+            size,
+            attempts=3,
+            cl_ord_id_prefix=cl_ord_id_prefix,
+            tag=tag,
+        )
+
+    async def close_short_qty(
         self,
         symbol: str,
         *,
         cl_ord_id_prefix: str = "cS",
         tag: Optional[str] = None,
+        size=None,  # <-- size = кол-во МОНЕТ (coin amount)
     ) -> Optional[Dict[str, Any]]:
         """
-        Закрывает ВЕСЬ шорт по symbol (если есть). Возвращает ответ OKX или None.
+        Если size=None -> закрыть ВЕСЬ шорт (официальный close-position).
+        Если size задан -> закрыть ШОРТ на конкретное количество МОНЕТ через reduceOnly market.
         """
         inst_id = to_okx_inst_id(symbol)
         pos_mode, _, short_pos = await self._find_position(inst_id)
@@ -523,42 +623,23 @@ class OKXAsyncClient:
             return None
 
         mgn_mode = (short_pos.get("mgnMode") or "").lower() or "cross"
-        pos_side = None
-        if pos_mode == "long_short_mode":
-            pos_side = "short"
+        pos_side = "short" if (pos_mode == "long_short_mode") else None
 
-        # 1) официальный полный close
-        body = {"instId": inst_id, "mgnMode": mgn_mode}
-        if pos_side:
-            body["posSide"] = pos_side
-        try:
-            return await self._post_private("/api/v5/trade/close-position", body)
-        except Exception:
-            # 2) фолбэк: рыночный reduceOnly BUY на весь объём
-            qty_abs = _d(short_pos.get("pos", "0")).copy_abs()
-            if qty_abs <= 0:
-                return None
-
-            lot_sz, min_sz = await self._get_lot_filters(inst_id)
-            if lot_sz > 0:
-                qty_abs = _round_step(qty_abs, lot_sz)
-            if qty_abs < min_sz:
-                qty_abs = min_sz
-
-            order = {
-                "instId": inst_id,
-                "tdMode": mgn_mode,
-                "side": "buy",
-                "ordType": "market",
-                "sz": _fmt_decimal(qty_abs),
-                "reduceOnly": "true",
-                "clOrdId": _safe_clordid(cl_ord_id_prefix),
-            }
-            if tag:
-                order["tag"] = tag
+        if size is None:
+            body = {"instId": inst_id, "mgnMode": mgn_mode}
             if pos_side:
-                order["posSide"] = "short"  # закрываем шорт покупкой в hedge-режиме
-            return await self._post_order_with_retry(order)
+                body["posSide"] = pos_side
+            return await self._post_private("/api/v5/trade/close-position", body)
+
+        # частичное закрытие
+        return await self._close_side_coin_size(
+            symbol,
+            "short",
+            size,
+            attempts=3,
+            cl_ord_id_prefix=cl_ord_id_prefix,
+            tag=tag,
+        )
 
     # -------- «bybit-style» обёртка: закрыть обе стороны --------
     async def close_all_positions(
@@ -578,13 +659,13 @@ class OKXAsyncClient:
         if not long_pos and not short_pos:
             return {"long_closed": None, "short_closed": None}
 
-        res_long = await self.close_long_all(
+        res_long = await self.close_long_qty(
             symbol,
             cl_ord_id_prefix=(cl_ord_id_prefix + "L"),
             tag=tag,
         ) if long_pos else None
 
-        res_short = await self.close_short_all(
+        res_short = await self.close_short_qty(
             symbol,
             cl_ord_id_prefix=(cl_ord_id_prefix + "S"),
             tag=tag,
@@ -764,19 +845,21 @@ class OKXAsyncClient:
     
         # ------------------ баланс аккаунта (USDT) ------------------
     # ------------------ общий баланс по USDT (все аккаунты) ------------------
+    # ------------------ общий баланс по USDT (все аккаунты, с учётом позиций) ------------------
     async def get_usdt_balance(self) -> str:
         """
-        Возвращает СУММАРНЫЙ доступный баланс в USDT (строкой) по всем аккаунтам,
+        Возвращает СУММАРНУЮ equity в USDT (строкой) по всем аккаунтам,
         к которым есть доступ у текущего API-ключа:
-          * основной trading/unified аккаунт (account/balance),
+
+          * основной trading/unified аккаунт (account/balance, поле eq по USDT),
           * основной funding аккаунт (asset/balances),
           * все субаккаунты (trading + funding), если ключ является мастер-аккаунтом.
 
-        Приоритет полей для trading/unified:
-          1) availBal
-          2) availEq
-          3) cashBal
-          4) eq
+        Для trading/unified берётся в приоритете:
+          1) eq        (equity, ВКЛЮЧАЯ открытые позиции),
+          2) availEq,
+          3) availBal,
+          4) cashBal.
 
         Для funding используем:
           * availBal, если есть, иначе bal.
@@ -795,13 +878,19 @@ class OKXAsyncClient:
             for d in details:
                 if (d.get("ccy") or "").upper() != "USDT":
                     continue
-                for key in ("availBal", "availEq", "cashBal", "eq"):
-                    v = d.get(key)
-                    if v not in (None, ""):
-                        total += _d(v)
-                        break
-                # по одной записи на валюту на аккаунт
-                break
+                # equity по USDT (учитывает открытые позиции)
+                v = (
+                    d.get("eq")
+                    or d.get("availEq")
+                    or d.get("availBal")
+                    or d.get("cashBal")
+                )
+                if v not in (None, ""):
+                    total += _d(v)
+                    break
+            # по одному объекту на валюту/аккаунт — выходим из details
+            # (если вдруг будет несколько — можно убрать этот break)
+            # break
 
         # ---------- 2) Основной funding-аккаунт ----------
         try:
@@ -832,7 +921,7 @@ class OKXAsyncClient:
             sub_names = [s.get("subAcct") for s in sub_data if s.get("subAcct")]
 
             for sub in sub_names:
-                # --- trading баланс субаккаунта ---
+                # --- trading/unified баланс субаккаунта ---
                 try:
                     raw_sub_tr = await self._request_private(
                         "GET",
@@ -845,12 +934,15 @@ class OKXAsyncClient:
                         for d in details:
                             if (d.get("ccy") or "").upper() != "USDT":
                                 continue
-                            for key in ("availBal", "availEq", "cashBal", "eq"):
-                                v = d.get(key)
-                                if v not in (None, ""):
-                                    total += _d(v)
-                                    break
-                            break
+                            v = (
+                                d.get("eq")
+                                or d.get("availEq")
+                                or d.get("availBal")
+                                or d.get("cashBal")
+                            )
+                            if v not in (None, ""):
+                                total += _d(v)
+                                break
                 except Exception:
                     # не получилось прочитать конкретный субакк — пропускаем
                     pass
@@ -882,6 +974,7 @@ class OKXAsyncClient:
             acc0 = data[0]
             total_eq = acc0.get("totalEq")
             if total_eq not in (None, ""):
+                # totalEq — в USD, но если у тебя чисто USDT-акк, это ≈ USDT
                 total = _d(total_eq)
 
         if total == 0:
@@ -895,7 +988,7 @@ async def main():
     client = OKXAsyncClient(OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE)
     try:
         symbol = "BIOUSDT"  # или 'BIO-USDT-SWAP'
-        # print(await client.open_long(symbol="BIOUSDT", qty="300", leverage=5))
+        # print(await client.open_short(symbol="BIOUSDT", qty="120", leverage=1))
 
         # print(await client.usdt_to_qty(symbol="SOONUSDT", usdt_amount=90, side="buy"))
 
@@ -907,13 +1000,13 @@ async def main():
 
         # pos = await client.get_open_positions(symbol=symbol)
         # print("OPEN POSITIONS:", pos)
-
+        print(await client.close_short_qty(symbol=symbol, size=120))
         # --- ПОЛНОЕ закрытие одной функцией ---
         # если есть лонг и/или шорт по symbol — закроет полностью найденные стороны
         # r = await client.close_all_positions(symbol=symbol)
         # print("CLOSE ALL SIDES:", r)
 
-        print(float(await client.get_usdt_balance()))
+        # print(float(await client.get_usdt_balance()))
         # print(await client.usdt_to_qty(symbol="BIOUSDT", usdt_amount=50, side="buy"))
 
     finally:
