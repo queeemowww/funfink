@@ -846,7 +846,7 @@ class BinanceAsyncFuturesClient:
         return await self._place_order(
             symbol=symbol,
             side="SELL",
-            quantity=_trim_decimals(qty),
+            quantity=_trim_decimals(_d(qty)),
             order_type="MARKET",
             reduce_only=True,
         )
@@ -869,7 +869,7 @@ class BinanceAsyncFuturesClient:
         return await self._place_order(
             symbol=symbol,
             side="BUY",
-            quantity=_trim_decimals(qty),
+            quantity=_trim_decimals(_d(qty)),
             order_type="MARKET",
             reduce_only=True,
         )

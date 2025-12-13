@@ -678,7 +678,7 @@ class BitgetAsyncClient:
     ) -> Optional[Dict[str, Any]]:
         """Закрыть LONG на конкретный size."""
         return await self._close_side_qty(
-            symbol, "long", size,
+            symbol, "long", _d(size),
             order_type=order_type, price=price, client_oid=client_oid,
             cancel_orders=cancel_orders, attempts=attempts,
         )
@@ -696,7 +696,7 @@ class BitgetAsyncClient:
     ) -> Optional[Dict[str, Any]]:
         """Закрыть SHORT на конкретный size."""
         return await self._close_side_qty(
-            symbol, "short", size,
+            symbol, "short", _d(size),
             order_type=order_type, price=price, client_oid=client_oid,
             cancel_orders=cancel_orders, attempts=attempts,
         )

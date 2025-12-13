@@ -599,7 +599,7 @@ class OKXAsyncClient:
         return await self._close_side_coin_size(
             symbol,
             "long",
-            size,
+            _d(size),
             attempts=3,
             cl_ord_id_prefix=cl_ord_id_prefix,
             tag=tag,
@@ -635,7 +635,7 @@ class OKXAsyncClient:
         return await self._close_side_coin_size(
             symbol,
             "short",
-            size,
+            _d(size),
             attempts=3,
             cl_ord_id_prefix=cl_ord_id_prefix,
             tag=tag,

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+from decimal import Decimal
 from pandas.errors import EmptyDataError, ParserError
 import time
 import httpx

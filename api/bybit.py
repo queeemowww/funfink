@@ -626,7 +626,7 @@ class BybitAsyncClient:
     ):
         qty = await self.usdt_to_qty(symbol, usdt_amount, side="buy", category=category)
         return await self.open_long(
-            symbol, qty, category=category, order_type=order_type, price=price,
+            symbol, _d(qty), category=category, order_type=order_type, price=price,
             position_idx=position_idx, leverage=leverage, order_link_id=order_link_id
         )
 
@@ -644,7 +644,7 @@ class BybitAsyncClient:
     ):
         qty = await self.usdt_to_qty(symbol, usdt_amount, side="sell", category=category)
         return await self.open_short(
-            symbol, qty, category=category, order_type=order_type, price=price,
+            symbol, _d(qty), category=category, order_type=order_type, price=price,
             position_idx=position_idx, leverage=leverage, order_link_id=order_link_id
         )
 
