@@ -1970,17 +1970,40 @@ class Logic():
                         symbol = active_logs.iloc[i]['symbol']
                         qty = float(active_logs.iloc[i]['qty'])
                         print(possible_revenue, "   possible_revenue")
-                        flag = 1
-                        while flag <= 3:
+                        long_price = None
+                        short_price = None
+
+                        for attempt in range(3):
                             try:
                                 long_pos = await self.c.get_open_position(exchange=long_ex, symbol=symbol)
                                 short_pos = await self.c.get_open_position(exchange=short_ex, symbol=symbol)
-                                long_price = float(long_pos['market_price'])
-                                short_price = float(short_pos['market_price'])
+
+                                if not long_pos or not short_pos:
+                                    raise RuntimeError("empty position data")
+
+                                long_price = float(long_pos.get("market_price") or 0)
+                                short_price = float(short_pos.get("market_price") or 0)
+
+                                if long_price <= 0 or short_price <= 0:
+                                    raise RuntimeError(f"bad market_price long={long_price} short={short_price}")
+
                                 break
-                            except:
-                                flag += 1
-                        
+                            except Exception as e:
+                                if attempt == 2:
+                                    print(f"⚠️ {symbol}: не смог получить market_price за 3 попытки: {e}")
+                                await asyncio.sleep(0.25 * (attempt + 1))
+
+                        # если цены не получили — пропускаем символ в этом проходе
+                        if long_price is None or short_price is None:
+                            continue
+
+                        open_long = float(active_logs.iloc[i]["long_price"] or 0)
+                        open_short = float(active_logs.iloc[i]["short_price"] or 0)
+                        if open_long <= 0 or open_short <= 0:
+                            print(f"⚠️ {symbol}: нет корректных open prices в logs.csv (long_price/short_price)")
+                            continue
+
+                        current_old_diff = ((long_price - open_long) / open_long - (short_price - open_short) / open_short) * 100
 
                         current_old_diff = ((long_price - active_logs.iloc[i]['long_price']) / active_logs.iloc[i]['long_price'] - (short_price - active_logs.iloc[i]['short_price']) /  active_logs.iloc[i]['short_price']) *100
                         if seconds_15 < 30:
@@ -1996,77 +2019,132 @@ class Logic():
                         print("current long ptice", long_price, "open long price", active_logs.iloc[i]['long_price'])
                         print("current short ptice", short_price,"open short price", active_logs.iloc[i]['short_price'])
                         print(current_old_diff, self.diff_return)
-                        try:
-                            self.confirmations[symbol] = self.confirmations[symbol]
-                        except:
-                            self.confirmations[symbol] = 0
-                        
+                        # -------- confirmations --------
+                        c = self.confirmations.get(symbol, 0)
                         if current_old_diff >= self.diff_return:
-                            self.confirmations[symbol] += 1
+                            c += 1
                         else:
+                            c = 0
+                        self.confirmations[symbol] = c
+                        print(f"{symbol}: confirmations {c}/3")
+
+                        # -------- partial close (10% per step) --------
+                        if current_old_diff >= self.diff_return and c >= 3:
+                            # для следующего шага снова нужны 3 подтверждения
                             self.confirmations[symbol] = 0
-                        print(self.confirmations[symbol], '/ 3')
-                        if current_old_diff >= self.diff_return and self.confirmations[symbol] >= 3:
-                            print(f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}")
-                            self.tg_send(
-                                f"⚠️{symbol}: разница выросла ({current_old_diff:.4f} > {self.diff_return:.4f}) — закрываем позиции. "
-                                f"Цена закрытия лонг: {long_price}, цена закрытия шорт: {short_price}"
+
+                            # ищем реальную строку в logs_df (а не в active_logs-копии)
+                            mask_row = (
+                                (logs_df["symbol"] == symbol) &
+                                (logs_df["long_exchange"] == long_ex) &
+                                (logs_df["short_exchange"] == short_ex) &
+                                (logs_df["status"] == "active")
                             )
-
-                            # 1) баланс до закрытия
-                            balance_before = 0.0
-                            for ex in ['bybit', 'bitget', 'okx', 'binance']:
-                                balance_before += float(await self.c.dict[ex].get_usdt_balance())
-
-                            try:
-                                self.part[symbol] = self.part[symbol]
-                            except:
-                                self.part[symbol] = 1
-
-                            if qty < 10:
-                                qty = qty / 10
-                            if self.part / 10 == 1:
-                                qty = qty * 10
-                            # 2) закрываем пару
-                            await asyncio.gather(
-                                self.c.dict[long_ex].close_long_qty(symbol=symbol, size = qty),
-                                self.c.dict[short_ex].close_short_qty(symbol=symbol, size = qty)
-                            )
-                            self.part[symbol] += 1
-                            if not self.part / 10 == 1:
+                            if not mask_row.any():
+                                self.part.pop(symbol, None)
+                                self.confirmations.pop(symbol, None)
                                 continue
 
-                            # 3) баланс после закрытия
-                            balance_after = 0.0
-                            for ex in ['bybit', 'bitget', 'okx', 'binance']:
-                                balance_after += float(await self.c.dict[ex].get_usdt_balance())
+                            row_idx = logs_df.index[mask_row][0]
+                            qty_remain = float(logs_df.loc[row_idx, "qty"] or 0.0)
+                            if qty_remain <= 0:
+                                self.part.pop(symbol, None)
+                                self.confirmations.pop(symbol, None)
+                                continue
 
-                            trade_pnl = balance_after - balance_before
-                            trade_pnl_pct = (trade_pnl / balance_before * 100) if balance_before > 0 else 0.0
+                            st = self.part.get(symbol)
+                            if not isinstance(st, dict):
+                                st = None
 
-                            # обновляем "глобальный" баланс
-                            self.new_balance = balance_after
-                            self.all_balance = balance_after
-                            self.profit = trade_pnl_pct / 100
+                            # стартуем частичное закрытие: фиксируем base_qty и баланс ДО
+                            if st is None:
+                                balance_before = 0.0
+                                for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                                    balance_before += float(await self.c.dict[ex].get_usdt_balance())
 
-                            self.tg_send(
-                                f"💰Баланс до: {balance_before:.2f} USDT\n"
-                                f"💰Баланс после: {balance_after:.2f} USDT\n"
-                                f"Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)"
-                            )
+                                st = {
+                                    "base_qty": qty_remain,          # база для 10% шагов
+                                    "done": 0,                       # сколько шагов уже сделали
+                                    "balance_before": balance_before
+                                }
+                                self.part[symbol] = st
 
-                            active_logs['status'] = active_logs[active_logs['symbol'] == symbol]['status'] == 'none'
-                            mask_close = (
-                                (logs_df['symbol'] == symbol) &
-                                (logs_df['long_exchange'] == long_ex) &
-                                (logs_df['short_exchange'] == short_ex) &
-                                (logs_df['status'] == 'active')
-                            )
-                            logs_df.loc[mask_close, 'status'] = 'closed'
+                                self.tg_send(
+                                    f"⚠️{symbol}: diff {current_old_diff:.4f} >= {self.diff_return:.4f} (3 подтверждения) — начинаю закрывать по 10%"
+                                )
+
+                            base_qty = float(st.get("base_qty") or qty_remain)
+                            done = int(st.get("done") or 0)
+
+                            # 10% от base_qty
+                            step_qty = base_qty * 0.10
+
+                            # последний шаг (10/10) — закрываем весь остаток
+                            close_qty = qty_remain if done >= 9 else min(step_qty, qty_remain)
+                            if close_qty <= 0:
+                                close_qty = qty_remain
+
+                            # делаем симметричное частичное закрытие
+                            try:
+                                await asyncio.gather(
+                                    self.c.dict[long_ex].close_long_qty(symbol=symbol, size=close_qty),
+                                    self.c.dict[short_ex].close_short_qty(symbol=symbol, size=close_qty)
+                                )
+                            except Exception as e_close:
+                                print(f"⚠️ partial close failed for {symbol}: {e_close} — fallback close all")
+                                await asyncio.gather(
+                                    self.c.close_order(symbol=symbol, exchange=long_ex),
+                                    self.c.close_order(symbol=symbol, exchange=short_ex),
+                                )
+                                done = 9  # считаем, что следующий блок финализирует
+
+                            # обновляем состояние
+                            done = min(10, done + 1)
+                            st["done"] = done
+                            self.part[symbol] = st
+
+                            # обновляем qty в логе (как остаток)
+                            new_qty = max(0.0, qty_remain - close_qty)
+                            logs_df.loc[row_idx, "qty"] = new_qty
                             try:
                                 logs_df.to_csv(self.logs_path, index=False)
                             except Exception as e:
-                                print(f"⚠️ не удалось записать лог: {e}")    
+                                print(f"⚠️ не удалось записать лог qty после partial close: {e}")
+
+                            self.tg_send(
+                                f"⚠️{symbol}: закрываю ~10% (шаг {done}/10), qty_close={close_qty}, остаток≈{new_qty:.6f}"
+                            )
+
+                            # финализация (10/10 или остаток ~0)
+                            if done >= 10 or new_qty <= 0:
+                                balance_after = 0.0
+                                for ex in ['bybit', 'bitget', 'okx', 'binance']:
+                                    balance_after += float(await self.c.dict[ex].get_usdt_balance())
+
+                                balance_before = float(st.get("balance_before") or 0.0)
+                                trade_pnl = balance_after - balance_before
+                                trade_pnl_pct = (trade_pnl / balance_before * 100) if balance_before > 0 else 0.0
+
+                                self.new_balance = balance_after
+                                self.all_balance = balance_after
+                                self.profit = trade_pnl_pct / 100
+
+                                self.tg_send(
+                                    f"✅ {symbol}: позиции закрыты частями.\n"
+                                    f"💰Баланс до: {balance_before:.2f} USDT\n"
+                                    f"💰Баланс после: {balance_after:.2f} USDT\n"
+                                    f"Прибыль по сделке: {trade_pnl:.2f} USDT ({trade_pnl_pct:.2f}%)"
+                                )
+
+                                logs_df.loc[row_idx, "status"] = "closed"
+                                try:
+                                    logs_df.to_csv(self.logs_path, index=False)
+                                except Exception as e:
+                                    print(f"⚠️ не удалось записать лог closed: {e}")
+
+                                # чистим состояние
+                                self.part.pop(symbol, None)
+                                self.confirmations.pop(symbol, None)
 
                     except Exception as e:
                         print(f"Ошибка при проверке {active_logs.iloc[i]['symbol']}: {e}")
@@ -2125,7 +2203,6 @@ class Logic():
                 await asyncio.sleep(60)
 
     async def main(self):
-
         await asyncio.gather(self.run_window(), self.run_at_50(), self.run_daily_task())
         # await asyncio.gather(self.run_daily_task())
         
