@@ -2131,7 +2131,7 @@ class Logic():
 
                             # последняя часть закрывает “всё что осталось”
                             if parts_closed >= 9:
-                                close_base_qty = remaining_qty
+                                close_base_qty = remaining_qty * 10
                             else:
                                 close_base_qty = part_base if part_base < remaining_qty else remaining_qty
 
